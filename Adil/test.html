@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Oda Test</title>
+</head>
+
+<body>
+
+<!-- BUTONLAR VE INPUTLAR (HTML BURADA) -->
+<button onclick="createRoom()">Oda Oluştur</button>
+<br><br>
+<script src="/socket.io/socket.io.js"></script>
+<script src="/js/client.js"></script>
+
+<input id="roomId" placeholder="Oda Kodu">
+<button onclick="joinRoom()">Odaya Katıl</button>
+<h3>Oyuncular</h3>
+<ul id="playerList"></ul>
+<!-- SOCKET.IO KÜTÜPHANESİ -->
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+
+<!-- BÜTÜN JAVASCRIPT SADECE BURADA -->
+
+<button id="startBtn" onClick="startGame()" style="display:none;">
+        Oyunu Başlat
+</button>
+
+
+
+
+</body>
+</html>

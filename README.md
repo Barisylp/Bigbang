@@ -1,0 +1,2 @@
+# Bigbang
+Bakıcaz bakalım

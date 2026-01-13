@@ -1,5 +1,5 @@
 export type CardType = 'door' | 'treasure';
-export type SubType = 'monster' | 'curse' | 'race' | 'class' | 'item' | 'modifier' | 'other';
+export type SubType = 'monster' | 'curse' | 'race' | 'class' | 'item' | 'modifier' | 'blessing' | 'other';
 
 export interface Card {
     id: string;
@@ -27,7 +27,27 @@ export interface ItemCard extends Card {
     usedBy?: string[];
 }
 
-export type GameCard = MonsterCard | ItemCard | Card;
+export interface RaceCard extends Card {
+    subType: 'race';
+    abilities: string[];
+}
+
+export interface ClassCard extends Card {
+    subType: 'class';
+    abilities: string[];
+}
+
+export interface CurseCard extends Card {
+    subType: 'curse';
+    effect: string; // Description of effect
+}
+
+export interface BlessingCard extends Card {
+    subType: 'blessing';
+    effect: string;
+}
+
+export type GameCard = MonsterCard | ItemCard | RaceCard | ClassCard | CurseCard | BlessingCard | Card;
 
 export const DOOR_DECK: GameCard[] = [
     {
@@ -60,8 +80,24 @@ export const DOOR_DECK: GameCard[] = [
         type: 'door',
         subType: 'curse',
         description: 'En iyi eşyan kırıldı.',
-        image: '',
-    } as any,
+        effect: 'Lose best item',
+    } as CurseCard,
+    {
+        id: 'r1',
+        name: 'Elf',
+        type: 'door',
+        subType: 'race',
+        description: 'Kaçarken +1 alırsın.',
+        abilities: ['Run away bonus'],
+    } as RaceCard,
+    {
+        id: 'cl1',
+        name: 'Savaşçı',
+        type: 'door',
+        subType: 'class',
+        description: 'Savaşta +1 bonus.',
+        abilities: ['Combat bonus'],
+    } as ClassCard,
 ];
 
 export const TREASURE_DECK: GameCard[] = [
@@ -85,4 +121,12 @@ export const TREASURE_DECK: GameCard[] = [
         goldValue: 600,
         slot: 'hand',
     } as any,
+    {
+        id: 'b1',
+        name: 'Şans Meleği',
+        type: 'treasure',
+        subType: 'blessing',
+        description: 'Bir sonraki zarı tekrar at.',
+        effect: 'Reroll dice',
+    } as BlessingCard,
 ];

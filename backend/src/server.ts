@@ -16,6 +16,7 @@ interface Room {
     players: Player[];
     started: boolean;
     currentTurn: number;
+    discardPile: any[];
 }
 
 const app = express();
@@ -42,7 +43,8 @@ io.on("connection", (socket: Socket) => {
             hostId: socket.id,
             players: [player],
             started: false,
-            currentTurn: 0
+            currentTurn: 0,
+            discardPile: []
         };
 
         rooms[roomId] = room;
@@ -110,6 +112,86 @@ io.on("connection", (socket: Socket) => {
 
         io.to(roomId).emit("turnChanged", room);
         io.to(roomId).emit("roomUpdate", room);
+    });
+
+    // 🃏 KART OYNA
+    socket.on("playCard", ({ roomId, cardId }: { roomId: string; cardId: string }) => {
+        const room = rooms[roomId];
+        if (!room) return;
+
+        const player = room.players.find(p => p.id === socket.id);
+        if (!player) return;
+
+        // Kartı elinden bul ve çıkar
+        const cardIndex = player.hand.findIndex(c => c.id === cardId);
+        if (cardIndex > -1) {
+            const playedCard = player.hand[cardIndex];
+            player.hand.splice(cardIndex, 1);
+            console.log(`Player ${player.name} played card: ${playedCard.name} (${playedCard.subType})`);
+
+            // Kart Türüne Göre İşlem Yap
+            if (playedCard.subType === 'item') {
+                const itemSlot = playedCard.slot;
+                if (itemSlot) {
+                    // Check slot limits
+                    let existingItemIndex = -1;
+
+                    if (itemSlot === 'hand') {
+                        // Max 2 hands
+                        const handItems = player.equipment.filter(i => i.slot === 'hand');
+                        if (handItems.length >= 2) {
+                            // Find the first hand item to replace (simple swap)
+                            existingItemIndex = player.equipment.findIndex(i => i.slot === 'hand');
+                        }
+                    } else {
+                        // Max 1 for other slots
+                        existingItemIndex = player.equipment.findIndex(i => i.slot === itemSlot);
+                    }
+
+                    if (existingItemIndex > -1) {
+                        // Unequip old item (return to hand)
+                        const oldItem = player.equipment[existingItemIndex];
+                        player.equipment.splice(existingItemIndex, 1);
+                        player.hand.push(oldItem);
+                        console.log(`Swapped ${oldItem.name} with ${playedCard.name}`);
+                    }
+                }
+                player.equipment.push(playedCard);
+            } else if (playedCard.subType === 'race') {
+                // Varsa eski ırkı ele geri al veya at (basitlik için direkt değişiyor)
+                player.race = playedCard;
+            } else if (playedCard.subType === 'class') {
+                player.class = playedCard;
+            } else if (playedCard.subType === 'blessing') {
+                // Kutsama efekti - şimdilik sadece mesaj
+                console.log("Blessing played:", playedCard.effect);
+                // Tek kullanımlık olduğu için yok olur (zaten elden silindi)
+            } else {
+                // Diğer kartlar (örneğin canavar oynandı - şu anlık boş)
+                console.log("Other card played");
+            }
+
+            io.to(roomId).emit("roomUpdate", room);
+        }
+    });
+
+    // 🗑️ KART ATMA
+    socket.on("discardCard", ({ roomId, cardId }: { roomId: string; cardId: string }) => {
+        const room = rooms[roomId];
+        if (!room) return;
+
+        const player = room.players.find(p => p.id === socket.id);
+        if (!player) return;
+
+        const cardIndex = player.hand.findIndex(c => c.id === cardId);
+        if (cardIndex > -1) {
+            const discardedCard = player.hand[cardIndex];
+            player.hand.splice(cardIndex, 1);
+            room.discardPile.push(discardedCard);
+
+            console.log(`Player ${player.name} discarded: ${discardedCard.name}`);
+            io.to(roomId).emit("roomUpdate", room);
+        }
     });
 
     // ❌ ÇIKIŞ

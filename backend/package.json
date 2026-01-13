@@ -2,10 +2,10 @@
     "name": "anadolu-munchkin-server",
     "version": "1.0.0",
     "description": "Backend for Anadolu Munchkin",
-    "main": "server.ts",
+    "main": "src/server.ts",
     "scripts": {
-        "start": "ts-node server.ts",
-        "dev": "nodemon --exec ts-node server.ts"
+        "start": "ts-node src/server.ts",
+        "dev": "nodemon --exec ts-node src/server.ts"
     },
     "dependencies": {
         "express": "^4.18.2",

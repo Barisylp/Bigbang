@@ -1,10 +1,10 @@
 import express from "express";
 import http from "http";
 import { Server, Socket } from "socket.io";
-import { Player } from "./Player";
+import { Player } from "./classes/Player";
 import path from "path";
 import cors from "cors";
-import { DOOR_DECK, TREASURE_DECK } from "./cards";
+import { DOOR_DECK, TREASURE_DECK } from "./data/cards";
 
 function generateRoomId(): string {
     return Math.random().toString(36).substring(2, 6).toUpperCase();

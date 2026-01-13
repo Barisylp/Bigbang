@@ -24,6 +24,32 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
 
     const myPower = getCombatStrength(myPlayer);
 
+    // Drag & Drop Handlers
+    const [draggedCard, setDraggedCard] = React.useState<any>(null);
+
+    const onDragStart = (e: React.DragEvent, card: any) => {
+        setDraggedCard(card);
+        e.dataTransfer.effectAllowed = "move";
+    };
+
+    const onDropInventory = (e: React.DragEvent) => {
+        e.preventDefault();
+        if (draggedCard) {
+            socket.emit('playCard', { roomId: currentRoom.id, cardId: draggedCard.id });
+            setDraggedCard(null);
+        }
+    };
+
+    const onDropDiscard = (e: React.DragEvent) => {
+        e.preventDefault();
+        if (draggedCard) {
+            if (confirm(`${draggedCard.name} kartını atmak (satmak) istiyor musunuz?`)) {
+                socket.emit('discardCard', { roomId: currentRoom.id, cardId: draggedCard.id });
+            }
+            setDraggedCard(null);
+        }
+    };
+
     // Calculates Total Wealth (Hands + Equipment)
     const getMyWealth = () => {
         if (!myPlayer) return 0;
@@ -72,7 +98,9 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
         const otherItems = player.equipment?.filter((i: any) => !['head', 'body', 'foot', 'hand'].includes(i.slot)) || [];
 
         return (
-            <div className="flex gap-2 bg-slate-900/50 p-2 rounded-lg border border-slate-700">
+            <div className="flex gap-2 bg-slate-900/50 p-2 rounded-lg border border-slate-700 min-h-[5rem] items-center justify-center transition-colors hover:bg-slate-800/80"
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={onDropInventory}>
                 <InventorySlot label="Irk" item={player.race} type="race" />
                 <InventorySlot label="Sınıf" item={player.class} type="class" />
                 <div className="w-px bg-slate-600 mx-1"></div>
@@ -100,17 +128,122 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
             </div>
 
             <div className="flex-1 p-4 flex justify-around items-start relative">
-                {/* Discard Pile Visualization */}
-                <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-32 h-44 border-4 border-dashed border-slate-600 rounded-xl flex items-center justify-center bg-slate-800/50">
-                    <div className="text-center text-slate-500 text-xs">
-                        <div className="font-bold mb-1">Discard Pile</div>
-                        <div>{currentRoom.discardPile?.length || 0} Çöp</div>
-                        {currentRoom.discardPile?.length > 0 && <div className="text-[10px] mt-1 text-slate-400">Son: {currentRoom.discardPile[currentRoom.discardPile.length - 1].name}</div>}
+
+                {/* CENTER DECKS (Absolute Positioned) */}
+                <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 flex gap-8 items-center z-10">
+
+                    {/* COMBAT ARENA OVERLAY */}
+                    {currentRoom.currentCombat && currentRoom.currentCombat.status === 'active' && (() => {
+                        const combatant = currentRoom.players.find((p: any) => p.id === currentRoom.currentCombat.playerId);
+                        const combatantPower = getCombatStrength(combatant);
+                        const isMe = socket.id === combatant?.id;
+
+                        return (
+                            <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-50 flex flex-col items-center bg-black/90 p-6 rounded-xl border-4 border-red-600 shadow-[0_0_50px_rgba(220,38,38,0.5)] min-w-[500px]">
+                                <h2 className="text-3xl font-extrabold text-red-500 mb-4 animate-pulse">DÖVÜŞ VAR!</h2>
+                                <div className="flex items-center gap-8 justify-center w-full">
+                                    {/* Player Stats */}
+                                    <div className="text-center flex flex-col items-center">
+                                        <div className="text-white font-bold text-xl">{combatant?.name}</div>
+                                        <div className="text-sm text-slate-400">Lvl {combatant?.level}</div>
+                                        <div className="text-5xl font-bold text-blue-400 mt-2 flex items-center gap-2">
+                                            <span className="text-2xl">⚔️</span> {combatantPower}
+                                        </div>
+                                    </div>
+
+                                    <div className="text-4xl font-bold text-slate-500 italic">VS</div>
+
+                                    {/* Monster Card */}
+                                    <div className="scale-125 transform transition-transform hover:scale-150 z-10">
+                                        <Card card={currentRoom.currentCombat.monster} />
+                                    </div>
+                                </div>
+
+                                {isMe ? (
+                                    <button
+                                        onClick={() => socket.emit('resolveCombat', { roomId: currentRoom.id })}
+                                        className={`mt-8 text-white font-bold py-3 px-8 rounded-full shadow-lg text-xl transition-all hover:scale-105 active:scale-95
+                                    ${combatantPower > currentRoom.currentCombat.monster.level
+                                                ? 'bg-gradient-to-r from-green-600 to-green-500 hover:from-green-500 hover:to-green-400 shadow-[0_0_20px_rgba(34,197,94,0.5)]'
+                                                : 'bg-gradient-to-r from-red-800 to-red-600 hover:from-red-700 hover:to-red-500 shadow-[0_0_20px_rgba(220,38,38,0.5)]'}`}
+                                    >
+                                        {combatantPower > currentRoom.currentCombat.monster.level ? "DÖVÜŞÜ KAZAN! (WIN)" : "KAYBET... (LOSE)"}
+                                    </button>
+                                ) : (
+                                    <div className="mt-8 text-slate-400 animate-pulse font-bold">
+                                        {combatant?.name} dövüşüyor...
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })()}
+
+
+                    {/* DOOR DECK */}
+                    <div
+                        onClick={() => {
+                            if (myTurn) {
+                                socket.emit('drawDoorCard', { roomId: currentRoom.id });
+                            } else {
+                                alert("Sadece kendi turunda kart çekebilirsin!");
+                            }
+                        }}
+                        className={`w-32 h-44 bg-slate-900 border-4 border-slate-700 rounded-xl flex flex-col items-center justify-center cursor-pointer hover:border-amber-600 transition-colors shadow-xl group relative select-none
+                        ${!myTurn ? 'opacity-70 cursor-not-allowed' : ''}`}
+                    >
+                        <div className="absolute inset-2 border-2 border-dashed border-slate-600 rounded opacity-50"></div>
+                        <div className="z-10 text-center">
+                            <div className="text-4xl mb-2">🚪</div>
+                            <div className="font-bold text-slate-300">KAPI DESTESİ</div>
+                            <div className="text-xs text-slate-500 mt-1">{currentRoom.doorDeck?.length || 0} Kart</div>
+                        </div>
+                        <div className="absolute bottom-2 text-[10px] text-amber-500 opacity-0 group-hover:opacity-100 transition-opacity font-bold">
+                            ÇEKMEK İÇİN TIKLA
+                        </div>
+                    </div>
+
+                    {/* DISCARD PILE */}
+                    <div
+                        className={`w-32 h-44 border-4 border-dashed rounded-xl flex items-center justify-center transition-all relative
+                        ${draggedCard ? 'border-red-500 bg-red-900/20 scale-105 shadow-[0_0_15px_rgba(220,38,38,0.5)]' : 'border-slate-600 bg-slate-800/50'}`}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={onDropDiscard}
+                    >
+                        <div className="text-center text-slate-500 text-xs pointer-events-none">
+                            <div className="font-bold mb-1">ÇÖP / SAT</div>
+                            <div className="text-[10px] mb-2">(Sürükle Bırak)</div>
+                            <div>{currentRoom.discardPile?.length || 0} Çöp</div>
+                            {currentRoom.discardPile?.length > 0 && <div className="text-[10px] mt-1 text-slate-400">Son: {currentRoom.discardPile[currentRoom.discardPile.length - 1].name}</div>}
+                        </div>
+                    </div>
+
+                    {/* TREASURE DECK */}
+                    <div
+                        onClick={() => {
+                            if (myTurn) {
+                                socket.emit('drawTreasureCard', { roomId: currentRoom.id });
+                            } else {
+                                alert("Sadece kendi turunda kart çekebilirsin!");
+                            }
+                        }}
+                        className={`w-32 h-44 bg-slate-900 border-4 border-yellow-700 rounded-xl flex flex-col items-center justify-center cursor-pointer hover:border-yellow-500 transition-colors shadow-xl group relative select-none
+                        ${!myTurn ? 'opacity-70 cursor-not-allowed' : ''}`}
+                    >
+                        <div className="absolute inset-2 border-2 border-dashed border-yellow-600 rounded opacity-50 bg-yellow-900/10"></div>
+                        <div className="z-10 text-center">
+                            <div className="text-4xl mb-2">💰</div>
+                            <div className="font-bold text-yellow-500">HAZİNE</div>
+                            <div className="text-xs text-slate-400 mt-1">{currentRoom.treasureDeck?.length || 0} Kart</div>
+                        </div>
+                        <div className="absolute bottom-2 text-[10px] text-yellow-400 opacity-0 group-hover:opacity-100 transition-opacity font-bold">
+                            ÇEKMEK İÇİN TIKLA
+                        </div>
                     </div>
                 </div>
 
+                {/* OTHER PLAYERS */}
                 {currentRoom.players.filter((p: any) => p.id !== socket.id).map((p: any) => (
-                    <div key={p.id} className="bg-slate-800 p-4 rounded border border-slate-600 flex flex-col items-center">
+                    <div key={p.id} className="bg-slate-800 p-4 rounded border border-slate-600 flex flex-col items-center z-0">
                         <div className="font-bold text-lg mb-1">{p.name}</div>
                         <div className="flex items-center gap-2 mb-2 text-xs">
                             <span className="bg-amber-600 px-1 rounded">Lvl {p.level}</span>
@@ -146,7 +279,7 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
                                 ⚔️ {myPower}
                             </span>
                             <span className="text-sm bg-yellow-600 text-black font-bold px-2 rounded flex items-center gap-1">
-                                🪙 {myWealth}
+                                🪙 {myPlayer?.gold || 0}
                             </span>
                         </h2>
                         <div className="mt-2">
@@ -154,31 +287,55 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
                         </div>
                     </div>
                     {myTurn && (
-                        <button
-                            onClick={() => {
-                                if (myPlayer.hand.length > 5) {
-                                    alert(`Elinizde ${myPlayer.hand.length} kart var! Turu bitirmek için en fazla 5 kartınız olmalı. Fazlalıkları atmak için kartların üzerindeki çarpı işaretini kullanın.`);
-                                    return;
-                                }
-                                socket.emit('endTurn', currentRoom.id);
-                            }}
-                            className={`${myPlayer.hand.length > 5 ? 'bg-red-600 hover:bg-red-500 animate-pulse' : 'bg-blue-600 hover:bg-blue-500'} text-white font-bold py-2 px-6 rounded-lg shadow-lg border-b-4 ${myPlayer.hand.length > 5 ? 'border-red-800' : 'border-blue-800'} active:border-b-0 active:translate-y-1 transition-all`}
-                        >
-                            {myPlayer.hand.length > 5 ? `Fazla Kart Var (${myPlayer.hand.length}/5)` : 'Turu Bitir'}
-                        </button>
+                        <div className="flex gap-2">
+                            {/* BUY LEVEL BUTTON */}
+                            <button
+                                onClick={() => socket.emit('buyLevel', { roomId: currentRoom.id })}
+                                disabled={myPlayer.gold < 1000 || myPlayer.level >= 9}
+                                className={`
+                                    flex flex-col items-center justify-center px-4 py-1 rounded-lg border-b-4 transition-all
+                                    ${myPlayer.gold >= 1000 && myPlayer.level < 9
+                                        ? 'bg-yellow-600 hover:bg-yellow-500 border-yellow-800 text-black cursor-pointer active:border-b-0 active:translate-y-1'
+                                        : 'bg-slate-700 border-slate-900 text-slate-500 cursor-not-allowed opacity-50'}
+                                `}
+                                title="1000 Altın karşılığında 1 Seviye al (Max Lvl 9)"
+                            >
+                                <span className="font-bold text-sm">Seviye Al</span>
+                                <span className="text-[10px] font-mono">1000 G</span>
+                            </button>
+
+                            {/* END TURN BUTTON */}
+                            <button
+                                onClick={() => {
+                                    if (myPlayer.hand.length > 5) {
+                                        alert(`Elinizde ${myPlayer.hand.length} kart var! Turu bitirmek için en fazla 5 kartınız olmalı. Fazlalıkları atmak için kartların üzerindeki çarpı işaretini kullanın.`);
+                                        return;
+                                    }
+                                    socket.emit('endTurn', currentRoom.id);
+                                }}
+                                className={`${myPlayer.hand.length > 5 ? 'bg-red-600 hover:bg-red-500 animate-pulse' : 'bg-blue-600 hover:bg-blue-500'} text-white font-bold py-2 px-6 rounded-lg shadow-lg border-b-4 ${myPlayer.hand.length > 5 ? 'border-red-800' : 'border-blue-800'} active:border-b-0 active:translate-y-1 transition-all`}
+                            >
+                                {myPlayer.hand.length > 5 ? `Fazla Kart Var (${myPlayer.hand.length}/5)` : 'Turu Bitir'}
+                            </button>
+                        </div>
                     )}
                 </div>
 
                 {/* MY HAND */}
                 <div className="flex gap-4 overflow-x-auto pb-4 px-2 custom-scrollbar">
                     {myPlayer?.hand.map((card: any, idx: number) => (
-                        <div key={`${card.id}-${idx}`} className="flex-shrink-0">
+                        <div
+                            key={`${card.id}-${idx}`}
+                            className="flex-shrink-0"
+                            draggable={myTurn}
+                            onDragStart={(e) => onDragStart(e, card)}
+                        >
                             <Card
                                 card={card}
                                 isPlayable={myTurn}
                                 onClick={() => socket.emit('playCard', { roomId: currentRoom.id, cardId: card.id })}
                                 onDiscard={() => {
-                                    if (confirm(`${card.name} kartını atmak istiyor musunuz?`)) {
+                                    if (confirm(`${card.name} kartını atmak (satmak) istiyor musunuz?`)) {
                                         socket.emit('discardCard', { roomId: currentRoom.id, cardId: card.id });
                                     }
                                 }}

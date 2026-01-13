@@ -98,6 +98,18 @@ export const DOOR_DECK: GameCard[] = [
         description: 'Savaşta +1 bonus.',
         abilities: ['Combat bonus'],
     } as ClassCard,
+    {
+        id: 'm_bedevi',
+        name: 'Bahtsız Bedevi',
+        type: 'door',
+        subType: 'monster',
+        description: 'Çölde kutup ayısı ile karşılaşmış.',
+        level: 1,
+        treasure: 1,
+        levelReward: 1,
+        badStuff: '1 Seviye Kaybedersin.',
+        badStuffEffect: null,
+    } as any,
 ];
 
 export const TREASURE_DECK: GameCard[] = [

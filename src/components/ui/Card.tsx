@@ -61,9 +61,14 @@ export function Card({ card, onClick, onDiscard, isPlayable = false }: CardProps
                     <p className="text-[10px] leading-tight mb-2">{card.description}</p>
 
                     {card.subType === 'monster' && (
-                        <div className="text-[9px] text-red-700 italic border-t border-red-200 pt-1">
-                            <span className="font-bold">Bad Stuff:</span> {card.badStuff}
-                        </div>
+                        <>
+                            <div className="text-[9px] text-green-700 border-t border-green-200 mt-1 pt-1">
+                                <span className="font-bold">Kazanç:</span> {card.levelReward} Seviye, {card.treasure} Hazine
+                            </div>
+                            <div className="text-[9px] text-red-700 italic border-t border-red-200 mt-1 pt-1">
+                                <span className="font-bold">Kaybedince:</span> {card.badStuff}
+                            </div>
+                        </>
                     )}
                     {card.subType === 'item' && (
                         <div className="text-[10px] font-bold mt-1">

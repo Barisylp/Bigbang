@@ -7,11 +7,13 @@ export class Player {
     public class?: any; // ClassCard
     public equipment: any[]; // ItemCard[]
     public inCombat: boolean;
+    public gold: number;
 
     constructor(id: string, name: string) {
         this.id = id;
         this.name = name;
         this.level = 1;
+        this.gold = 0;
         this.hand = [];
         this.equipment = [];
         this.inCombat = false;

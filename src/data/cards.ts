@@ -73,6 +73,18 @@ export const DOOR_DECK: GameCard[] = [
         description: 'Mesai bitti: Savaşta bir kez monsterı görmezden gelip kaçabilirsin (9-5 arası).',
         abilities: ['kacis'],
     } as any,
+    {
+        id: 'm_bedevi',
+        name: 'Bahtsız Bedevi',
+        type: 'door',
+        subType: 'monster',
+        description: 'Çölde kutup ayısı ile karşılaşmış.',
+        level: 1,
+        treasure: 1,
+        levelReward: 1,
+        badStuff: '1 Seviye Kaybedersin.',
+        badStuffEffect: () => console.log('Lose 1 level'),
+    } as any,
 ];
 
 export const TREASURE_DECK: GameCard[] = [

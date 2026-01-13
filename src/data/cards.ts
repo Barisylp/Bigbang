@@ -1,4 +1,4 @@
-import { GameCard } from "../types/game";
+import type { GameCard } from "../types/game";
 
 export const DOOR_DECK: GameCard[] = [
     {

@@ -4,6 +4,7 @@ import { Server, Socket } from "socket.io";
 import { Player } from "./Player";
 import path from "path";
 import cors from "cors";
+import { DOOR_DECK, TREASURE_DECK } from "./cards";
 
 function generateRoomId(): string {
     return Math.random().toString(36).substring(2, 6).toUpperCase();
@@ -35,7 +36,7 @@ io.on("connection", (socket: Socket) => {
         const roomId = generateRoomId();
 
         const player = new Player(socket.id, playerName);
-        
+
         const room: Room = {
             id: roomId,
             hostId: socket.id,
@@ -64,8 +65,8 @@ io.on("connection", (socket: Socket) => {
         // Prevent duplicate joining if needed, or re-connect logic
         const existingPlayer = room.players.find(p => p.id === socket.id);
         if (!existingPlayer) {
-             const player = new Player(socket.id, playerName);
-             room.players.push(player);
+            const player = new Player(socket.id, playerName);
+            room.players.push(player);
         }
 
         console.log("ROOM JOINED:", room);
@@ -82,8 +83,21 @@ io.on("connection", (socket: Socket) => {
 
         if (socket.id !== room.hostId) return;
 
+        console.log("Starting game for room", roomId);
+
+        // Deal 4 Door cards and 4 Treasure cards to each player
+        room.players.forEach(player => {
+            player.hand = []; // Reset hand
+            // Simple mock dealing - random from decks
+            for (let i = 0; i < 4; i++) {
+                player.hand.push(DOOR_DECK[Math.floor(Math.random() * DOOR_DECK.length)]);
+                player.hand.push(TREASURE_DECK[Math.floor(Math.random() * TREASURE_DECK.length)]);
+            }
+        });
+
         room.started = true;
         io.to(roomId).emit("gameStarted", room);
+        io.to(roomId).emit("roomUpdate", room);
     });
 
     // 🔁 SIRA GEÇ
@@ -92,8 +106,10 @@ io.on("connection", (socket: Socket) => {
         if (!room) return;
 
         room.currentTurn = (room.currentTurn + 1) % room.players.length;
+        console.log("Turn changed to", room.currentTurn);
 
         io.to(roomId).emit("turnChanged", room);
+        io.to(roomId).emit("roomUpdate", room);
     });
 
     // ❌ ÇIKIŞ

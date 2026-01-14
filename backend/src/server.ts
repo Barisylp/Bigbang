@@ -54,6 +54,12 @@ interface Room {
     doorDeck: any[]; // GameCard[]
 
     treasureDeck: any[]; // GameCard[]
+    phase: 'kick' | 'action' | 'combat' | 'end';
+    pendingDraw?: {
+        card: any;
+        playerId: string;
+        isPublic: boolean;
+    };
     currentCombat?: {
         monster: any; // MonsterCard
         playerId: string;
@@ -189,7 +195,8 @@ io.on("connection", (socket: Socket) => {
             currentTurn: 0,
             discardPile: [],
             doorDeck: initializeDoorDeck(),
-            treasureDeck: initializeTreasureDeck()
+            treasureDeck: initializeTreasureDeck(),
+            phase: 'kick'
         };
         rooms[roomId] = room;
         socket.join(roomId);
@@ -235,15 +242,19 @@ io.on("connection", (socket: Socket) => {
         });
 
         room.started = true;
+        room.phase = 'kick';
         io.to(roomId).emit("gameStarted", room);
         emitRoomUpdate(roomId);
     });
 
-    // 🔁 SIRA GEÇ
     socket.on("endTurn", (roomId: string) => {
         const room = rooms[roomId];
         if (!room) return;
         room.currentTurn = (room.currentTurn + 1) % room.players.length;
+        room.phase = 'kick';
+        console.log("Turn changed to", room.currentTurn);
+
+        io.to(roomId).emit("turnChanged", room);
         emitRoomUpdate(roomId);
     });
 
@@ -350,10 +361,32 @@ io.on("connection", (socket: Socket) => {
         const player = room.players.find(p => p.id === socket.id);
         if (!player) return;
 
-        if (!room.doorDeck || room.doorDeck.length === 0) room.doorDeck = initializeDoorDeck();
+        // Sadece sırası olan oyuncu ve doğru fazda çekebilir
+        const currentPlayerIndex = room.currentTurn;
+        if (room.players[currentPlayerIndex].id !== socket.id) {
+            socket.emit("error", "Sıra sende değil!");
+            return;
+        }
+
+        if (room.phase !== 'kick') {
+            socket.emit("error", "Bu aşamada kapı kartı çekemezsin!");
+            return;
+        }
+
+        // Deste bittiyse yenile
+        if (!room.doorDeck || room.doorDeck.length === 0) {
+            room.doorDeck = initializeDoorDeck();
+            console.log("Door Deck Reshuffled!");
+            io.to(roomId).emit("notification", "Kapı destesi bitti ve yeniden karıldı!");
+        }
+
         const card = room.doorDeck.pop();
         if (card) {
+            console.log(`Player ${player.name} kicked open the door: ${card.name} (${card.subType})`);
+
             if (card.subType === 'monster') {
+                // CANAVAR ÇIKTI, DÖVÜŞ BAŞLASIN
+                room.phase = 'combat';
                 room.currentCombat = {
                     monster: card,
                     playerId: player.id,
@@ -375,14 +408,132 @@ io.on("connection", (socket: Socket) => {
                         }
                     }
                 }, 1000);
+                io.to(roomId).emit("combatStarted", { monster: card, playerId: player.id });
+                io.to(roomId).emit("notification", `${player.name} bir canavarla karşılaştı: ${card.name}! (Seviye ${card.level})`);
             } else {
-                player.hand.push(card);
+                // Canavar değilse POPUP göster (Genel)
+                room.pendingDraw = {
+                    card: card,
+                    playerId: player.id,
+                    isPublic: true
+                };
             }
             emitRoomUpdate(roomId);
         }
     });
 
-    // 💰 HAZİNE KARTI ÇEK
+    // 📩 KARTI AL
+    socket.on("takeCard", ({ roomId }: { roomId: string }) => {
+        const room = rooms[roomId];
+        if (!room || !room.pendingDraw) return;
+
+        if (room.pendingDraw.playerId !== socket.id) {
+            socket.emit("error", "Sadece kartı çeken kişi alabilir!");
+            return;
+        }
+
+        const player = room.players.find(p => p.id === socket.id);
+        if (!player) return;
+
+        const card = room.pendingDraw.card;
+
+        if (card.subType === 'curse' && room.pendingDraw.isPublic) {
+            // Lanet ise discard olur (zaten uygulanmış sayıyoruz şimdilik)
+            room.discardPile.push(card);
+        } else {
+            player.hand.push(card);
+        }
+
+        room.pendingDraw = undefined;
+        room.phase = (room.phase === 'kick') ? 'action' : 'end';
+
+        emitRoomUpdate(roomId);
+    });
+
+    // 😈 BELA ARA
+    socket.on("lookForTrouble", ({ roomId, cardId }: { roomId: string; cardId: string }) => {
+        const room = rooms[roomId];
+        if (!room) return;
+
+        const player = room.players.find(p => p.id === socket.id);
+        if (!player) return;
+
+        if (room.phase !== 'action') {
+            socket.emit("error", "Bu aşamada bela arayamazsın!");
+            return;
+        }
+
+        const cardIndex = player.hand.findIndex(c => c.id === cardId);
+        if (cardIndex === -1) return;
+
+        const card = player.hand[cardIndex];
+        if (card.subType !== 'monster') {
+            socket.emit("error", "Sadece bir canavar ile bela arayabilirsin!");
+            return;
+        }
+
+        // Canavarı elinden çıkar ve savaşı başlat
+        player.hand.splice(cardIndex, 1);
+        room.phase = 'combat';
+        room.currentCombat = {
+            monster: card,
+            playerId: player.id,
+            status: 'active',
+            timer: 7,
+            playerBonus: 0,
+            monsterBonus: 0
+        };
+
+        if (room.timerInterval) clearInterval(room.timerInterval);
+        room.timerInterval = setInterval(() => {
+            if (room.currentCombat && room.currentCombat.timer !== undefined) {
+                room.currentCombat.timer--;
+                if (room.currentCombat.timer <= 0) {
+                    if (room.timerInterval) clearInterval(room.timerInterval);
+                    room.timerInterval = null;
+                    handleResolveCombat(roomId);
+                } else {
+                    emitRoomUpdate(roomId);
+                }
+            }
+        }, 1000);
+
+        console.log(`Player ${player.name} is looking for trouble with ${card.name}`);
+        io.to(roomId).emit("combatStarted", { monster: card, playerId: player.id });
+        io.to(roomId).emit("notification", `${player.name} elindeki bir canavarla kapışıyor: ${card.name}!`);
+        emitRoomUpdate(roomId);
+    });
+
+    // 💰 YAĞMALA
+    socket.on("lootTheRoom", ({ roomId }: { roomId: string }) => {
+        const room = rooms[roomId];
+        if (!room) return;
+
+        const player = room.players.find(p => p.id === socket.id);
+        if (!player) return;
+
+        if (room.phase !== 'action') {
+            socket.emit("error", "Bu aşamada yağma yapamazsın!");
+            return;
+        }
+
+        // Deste bittiyse yenile
+        if (!room.doorDeck || room.doorDeck.length === 0) {
+            room.doorDeck = initializeDoorDeck();
+        }
+
+        const card = room.doorDeck.pop();
+        if (card) {
+            room.pendingDraw = {
+                card: card,
+                playerId: player.id,
+                isPublic: false
+            };
+            console.log(`Player ${player.name} looted the room (pending draw)`);
+            io.to(roomId).emit("notification", `${player.name} odayı sessizce yağmaladı.`);
+            emitRoomUpdate(roomId);
+        }
+    });
     socket.on("drawTreasureCard", ({ roomId }: { roomId: string }) => {
         const room = rooms[roomId];
         if (!room) return;

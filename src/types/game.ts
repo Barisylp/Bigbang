@@ -1,5 +1,5 @@
 export type CardType = 'door' | 'treasure';
-export type SubType = 'monster' | 'curse' | 'race' | 'class' | 'item' | 'modifier' | 'blessing' | 'other';
+export type SubType = 'monster' | 'curse' | 'race' | 'class' | 'item' | 'modifier' | 'blessing' | 'fightspells' | 'other';
 
 export interface Card {
     id: string;

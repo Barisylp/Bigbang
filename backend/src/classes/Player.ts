@@ -6,6 +6,7 @@ export class Player {
     public race?: any; // RaceCard
     public class?: any; // ClassCard
     public equipment: any[]; // ItemCard[]
+    public backpack: any[]; // Cards that cannot be equipped (private to player)
     public inCombat: boolean;
     public gold: number;
 
@@ -16,6 +17,7 @@ export class Player {
         this.gold = 0;
         this.hand = [];
         this.equipment = [];
+        this.backpack = [];
         this.inCombat = false;
     }
 

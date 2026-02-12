@@ -8,7 +8,7 @@ interface GamePageProps {
 
 const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
     const myPlayer = currentRoom.players.find((p: any) => p.id === socket.id);
-    const myTurn = (currentRoom.players[currentRoom.currentTurn]?.id === socket.id);
+    const myTurn = currentRoom.players[currentRoom.currentTurn].id === socket.id;
 
     // Calculate Combat Power Frontend Side
     const getCombatStrength = (player: any) => {
@@ -23,9 +23,6 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
     };
 
     const myPower = getCombatStrength(myPlayer);
-
-    // State for spell targeting
-    const [showSpellTarget, setShowSpellTarget] = React.useState<any>(null);
 
     // Drag & Drop Handlers
     const [draggedCard, setDraggedCard] = React.useState<any>(null);
@@ -56,22 +53,32 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
     const onDropBackpack = (e: React.DragEvent) => {
         e.preventDefault();
         if (draggedCard) {
+            if (draggedCard.subType !== 'item' && draggedCard.subType !== 'fightspells') {
+                alert("Sadece eşya (item) veya savaş büyüsü (fightspells) kartlarını sırt çantasına koyabilirsin!");
+                setDraggedCard(null);
+                return;
+            }
             socket.emit('moveToBackpack', { roomId: currentRoom.id, cardId: draggedCard.id });
             setDraggedCard(null);
         }
     };
 
-    const playFromBackpack = (cardId: string) => {
-        socket.emit('playFromBackpack', { roomId: currentRoom.id, cardId });
+    const [showSpellTarget, setShowSpellTarget] = React.useState<any>(null);
+
+    const playFightSpell = (cardId: string, target: 'player' | 'monster') => {
+        socket.emit('playFightSpell', { roomId: currentRoom.id, cardId, target });
+        setShowSpellTarget(null);
     };
 
     const takeFromBackpack = (cardId: string) => {
         socket.emit('removeFromBackpack', { roomId: currentRoom.id, cardId });
     };
 
-    const playCard = (cardId: string) => {
-        socket.emit('playCard', { roomId: currentRoom.id, cardId });
+    const playFromBackpack = (cardId: string) => {
+        socket.emit('playFromBackpack', { roomId: currentRoom.id, cardId });
     };
+
+
 
     // Inventory Slot Component
     const InventorySlot = ({ label, item, type = "item" }: { label: string, item: any, type?: string }) => (
@@ -104,9 +111,10 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
 
         return (
             <div className="flex gap-4 items-start">
+                {/* Equipment Slots */}
                 <div className="flex-1 flex gap-2 bg-slate-900/50 p-2 rounded-lg border border-slate-700 min-h-[5rem] items-center justify-center transition-colors hover:bg-slate-800/80"
-                    onDragOver={(e) => isMyPlayer && e.preventDefault()}
-                    onDrop={isMyPlayer ? onDropInventory : undefined}>
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={onDropInventory}>
                     <InventorySlot label="Irk" item={player.race} type="race" />
                     <InventorySlot label="Sınıf" item={player.class} type="class" />
                     <div className="w-px bg-slate-600 mx-1 self-stretch"></div>
@@ -120,6 +128,7 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
                     ))}
                 </div>
 
+                {/* Backpack Section */}
                 <div className={`w-48 bg-slate-900/50 p-2 rounded-lg border flex flex-col transition-all min-h-[5.5rem]
                     ${isMyPlayer && draggedCard ? 'border-amber-500 bg-amber-900/20 scale-105' : 'border-slate-700'}`}
                     onDragOver={(e) => isMyPlayer && e.preventDefault()}
@@ -169,6 +178,9 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
                                 )}
                             </div>
                         ))}
+                        {(!player.backpack || player.backpack.length === 0) && (
+                            <div className="text-[9px] text-slate-600 italic py-2 w-full text-center">Boş</div>
+                        )}
                     </div>
                 </div>
             </div>
@@ -176,165 +188,293 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
     };
 
     return (
-        <div className="min-h-screen bg-slate-900 text-white flex flex-col overflow-hidden relative">
-            {/* Combat Overlay */}
-            {currentRoom.currentCombat && currentRoom.currentCombat.status === 'active' && (() => {
-                const combatant = currentRoom.players.find((p: any) => p.id === currentRoom.currentCombat.playerId);
-                const isMe = socket.id === combatant?.id;
-                const monster = currentRoom.currentCombat.monster;
-                const playerBonus = currentRoom.currentCombat.playerBonus || 0;
-                const monsterBonus = currentRoom.currentCombat.monsterBonus || 0;
-                const combatantPower = getCombatStrength(combatant) + playerBonus;
-                const monsterPower = monster.level + monsterBonus;
-
-                return (
-                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-                        <div className="relative flex flex-col items-center bg-black/90 p-8 rounded-2xl border-4 border-red-600 shadow-[0_0_50px_rgba(220,38,38,0.5)] min-w-[600px] max-w-4xl text-center">
-                            <h2 className="text-4xl font-black text-red-500 mb-8 animate-pulse uppercase">DÖVÜŞ BAŞLADI!</h2>
-                            <div className="mb-6">
-                                <div className={`text-4xl font-black px-6 py-2 rounded-full border-4 shadow-lg ${(currentRoom.currentCombat.timer || 0) <= 3 ? 'text-red-500 border-red-500 animate-bounce' : 'text-amber-500 border-amber-500'
-                                    }`}>
-                                    ⏱️ {currentRoom.currentCombat.timer || 0}s
-                                </div>
-                            </div>
-                            <div className="flex items-center gap-12 justify-center w-full mb-8">
-                                <div className="flex flex-col items-center">
-                                    <div className="text-white font-black text-2xl uppercase">{combatant?.name}</div>
-                                    <div className="text-7xl font-black text-blue-400 mt-4">⚔️ {combatantPower}</div>
-                                    {playerBonus !== 0 && <div className="text-green-400 font-bold animate-pulse">({playerBonus > 0 ? '+' : ''}{playerBonus} Bonus)</div>}
-                                </div>
-                                <div className="text-5xl font-black text-slate-700">VS</div>
-                                <div className="flex flex-col items-center"
-                                    onDragOver={(e) => e.preventDefault()}
-                                    onDrop={(e) => {
-                                        e.preventDefault();
-                                        if (draggedCard && draggedCard.subType === 'fightspells') {
-                                            setShowSpellTarget(draggedCard);
-                                            setDraggedCard(null);
-                                        }
-                                    }}
-                                >
-                                    <div className="text-red-500 font-black text-2xl uppercase">{monster.name}</div>
-                                    <div className="scale-110 my-4"><Card card={monster} /></div>
-                                    <div className="text-4xl font-black text-red-500">👹 {monsterPower}</div>
-                                    {monsterBonus !== 0 && <div className="text-red-400 font-bold animate-pulse">({monsterBonus > 0 ? '+' : ''}{monsterBonus} Bonus)</div>}
-                                </div>
-                            </div>
-                            {isMe ? (
-                                <button onClick={() => socket.emit('resolveCombat', { roomId: currentRoom.id })}
-                                    className={`mt-12 text-white font-black py-5 px-20 rounded-full shadow-2xl text-2xl transition-all hover:scale-110 active:scale-95 uppercase ${combatantPower > monsterPower ? 'bg-gradient-to-r from-green-600 to-green-400 shadow-[0_0_40px_rgba(34,197,94,0.6)]' : 'bg-gradient-to-r from-red-800 to-red-600 shadow-[0_0_40px_rgba(153,27,27,0.6)]'
-                                        }`}>
-                                    {combatantPower > monsterPower ? "🦁 KAZAN! (WIN)" : "💀 KAYBET... (LOSE)"}
-                                </button>
-                            ) : (
-                                <div className="mt-12 text-slate-500 font-black text-sm uppercase tracking-widest">{combatant?.name} DÖVÜŞÜYOR...</div>
-                            )}
-                        </div>
-                    </div>
-                );
-            })()}
-
-            {/* Draw Overlay */}
-            {currentRoom.pendingDraw && (() => {
-                const drawer = currentRoom.players.find((p: any) => p.id === currentRoom.pendingDraw.playerId);
-                const isMe = socket.id === drawer?.id;
-                const { card, isPublic } = currentRoom.pendingDraw;
-                return (
-                    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/95 backdrop-blur-md">
-                        <div className="flex flex-col items-center text-center">
-                            <div className="mb-6">
-                                <div className="text-white font-black text-2xl">{drawer?.name}</div>
-                                <div className="text-slate-400 font-bold uppercase text-xs">{isPublic ? 'BİR KART ÇEKTİ!' : 'GİZLİ BİR KART ALDI...'}</div>
-                            </div>
-                            <div className="mb-10 scale-150">
-                                {isMe || isPublic ? <Card card={card} /> : <div className="w-48 h-72 bg-slate-800 border-4 border-slate-700 rounded-2xl flex items-center justify-center font-black text-7xl text-slate-600">?</div>}
-                            </div>
-                            {isMe && <button onClick={() => socket.emit('takeCard', { roomId: currentRoom.id })}
-                                className="bg-amber-600 hover:bg-amber-500 text-white font-black py-4 px-16 rounded-full shadow-2xl text-lg uppercase tracking-widest">KARTIMI AL</button>}
-                        </div>
-                    </div>
-                );
-            })()}
-
-            {/* Spell Modal */}
-            {showSpellTarget && (
-                <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/90 backdrop-blur-md p-4">
-                    <div className="bg-slate-900 p-8 rounded-3xl border-4 border-amber-600 shadow-2xl max-w-lg w-full text-center">
-                        <h3 className="text-3xl font-black text-amber-500 mb-8 uppercase">HEDEF SEÇ!</h3>
-                        <div className="flex flex-col gap-4">
-                            <button onClick={() => { socket.emit('playFightSpell', { roomId: currentRoom.id, cardId: showSpellTarget.id, target: 'player' }); setShowSpellTarget(null); }}
-                                className="bg-blue-900/40 hover:bg-blue-600/60 p-6 rounded-2xl border-2 border-blue-500 transition-all font-black text-xl flex justify-between items-center text-blue-400 uppercase">OYUNCU 🛡️</button>
-                            <button onClick={() => { socket.emit('playFightSpell', { roomId: currentRoom.id, cardId: showSpellTarget.id, target: 'monster' }); setShowSpellTarget(null); }}
-                                className="bg-red-900/40 hover:bg-red-600/60 p-6 rounded-2xl border-2 border-red-500 transition-all font-black text-xl flex justify-between items-center text-red-500 uppercase">CANAVAR 👹</button>
-                        </div>
-                        <button onClick={() => setShowSpellTarget(null)} className="mt-8 text-slate-500 font-bold uppercase text-xs">Vazgeç</button>
-                    </div>
+        <div className="min-h-screen bg-slate-900 text-white flex flex-col overflow-hidden">
+            {/* TOP BAR */}
+            <div className="bg-slate-800 p-2 flex justify-between items-center border-b border-slate-700">
+                <div className="font-bold text-amber-500 text-xl">Anadolu Munchkin - Oda: {currentRoom.id}</div>
+                <div className={`px-4 py-1 rounded font-bold ${myTurn ? 'bg-green-600 animate-pulse' : 'bg-slate-600'}`}>
+                    {myTurn ? 'SENİN SIRAN!' : `Sıra: ${currentRoom.players[currentRoom.currentTurn].name}`}
                 </div>
-            )}
-
-            {/* Top Bar */}
-            <div className="bg-slate-800 p-2 flex justify-between items-center border-b border-slate-700 shadow-md z-20">
-                <div className="font-black text-amber-500 text-xl tracking-tighter uppercase px-2">Anadolu Munchkin - {currentRoom.id}</div>
-                <div className="flex gap-4 items-center">
-                    <div className={`px-4 py-1.5 rounded-full border-2 font-black text-sm ${myTurn ? 'bg-green-600/20 border-green-500 text-green-400 animate-pulse' : 'bg-slate-700 border-slate-600 text-slate-400'}`}>
-                        {myTurn ? '👉 SENİN SIRAN!' : `⏳ SIRA: ${currentRoom.players[currentRoom.currentTurn]?.name}`}
-                    </div>
-                </div>
-                <button className="bg-red-900/50 hover:bg-red-700 text-red-400 px-4 py-1.5 rounded-full text-[10px] font-bold uppercase">Çıkış</button>
+                <button className="bg-red-900 px-3 py-1 rounded text-xs hover:bg-red-700">Çık</button>
             </div>
 
-            {/* Main Area */}
-            <div className="flex-1 p-4 flex flex-col justify-around items-center relative overflow-hidden">
-                <div className="flex gap-12 items-center z-10">
-                    <div onClick={() => { if (myTurn) { if (currentRoom.phase === 'kick') socket.emit('drawDoorCard', { roomId: currentRoom.id }); else if (currentRoom.phase === 'action') socket.emit('lootTheRoom', { roomId: currentRoom.id }); } }}
-                        className={`w-32 h-44 bg-slate-950 border-4 rounded-xl flex flex-col items-center justify-center cursor-pointer transition-all shadow-2xl group relative
-                            ${myTurn && (currentRoom.phase === 'kick' || currentRoom.phase === 'action') ? 'border-amber-600 hover:border-amber-400 hover:scale-110' : 'border-slate-800 opacity-50 grayscale'}`}>
-                        <div className="text-5xl mb-2 group-hover:scale-125 transition-transform">🚪</div>
-                        <div className="font-black text-slate-300 tracking-widest text-sm">KAPI</div>
-                        <div className="text-[10px] text-amber-500 mt-1 font-bold">{currentRoom.doorDeck?.length || 0} KART</div>
+            <div className="flex-1 p-4 flex justify-around items-start relative">
+
+                {/* CENTER DECKS (Absolute Positioned) */}
+                <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 flex gap-8 items-center z-10">
+
+                    {/* COMBAT ARENA OVERLAY */}
+                    {currentRoom.currentCombat && currentRoom.currentCombat.status === 'active' && (() => {
+                        const combatant = currentRoom.players.find((p: any) => p.id === currentRoom.currentCombat.playerId);
+                        const combatantPower = getCombatStrength(combatant);
+                        const isMe = socket.id === combatant?.id;
+
+                        return (
+                            <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-50 flex flex-col items-center bg-black/95 p-8 rounded-2xl border-4 border-red-600 shadow-[0_0_100px_rgba(220,38,38,0.7)] min-w-[600px] backdrop-blur-md">
+                                <div className="absolute -top-6 bg-red-600 text-white px-6 py-2 rounded-full font-black text-2xl animate-bounce shadow-lg">
+                                    DÖVÜŞ VAR!
+                                </div>
+
+                                {/* Timer Display */}
+                                {currentRoom.currentCombat.timer !== undefined && (
+                                    <div className="mb-6 flex flex-col items-center">
+                                        <div className={`text-6xl font-black transition-all transform ${currentRoom.currentCombat.timer <= 3 ? 'text-red-500 scale-125 animate-ping' : 'text-amber-500'}`}>
+                                            {currentRoom.currentCombat.timer}
+                                        </div>
+                                        <div className="text-xs text-slate-500 uppercase tracking-widest mt-1">Saniye Kaldı</div>
+                                    </div>
+                                )}
+
+                                <div className="flex items-center gap-12 justify-center w-full mb-8">
+                                    {/* Player Stats */}
+                                    <div className="text-center flex flex-col items-center bg-slate-900/80 p-6 rounded-xl border border-blue-500/30">
+                                        <div className="text-white font-bold text-2xl mb-1">{combatant?.name}</div>
+                                        <div className="text-xs text-blue-400 font-bold uppercase tracking-widest mb-4">SAVAŞÇI</div>
+                                        <div className="text-6xl font-black text-white flex items-center gap-3 drop-shadow-[0_0_10px_rgba(59,130,246,0.5)]">
+                                            <span className="text-3xl text-blue-500">⚔️</span> {combatantPower + (currentRoom.currentCombat.playerBonus || 0)}
+                                        </div>
+                                        {currentRoom.currentCombat.playerBonus > 0 && (
+                                            <div className="text-green-400 font-bold mt-1 text-sm">+{currentRoom.currentCombat.playerBonus} Bonus</div>
+                                        )}
+                                    </div>
+
+                                    <div className="text-5xl font-black text-slate-700 italic select-none">VS</div>
+
+                                    {/* Monster Card */}
+                                    <div className={`scale-150 transform transition-transform hover:rotate-2 relative rounded overflow-visible ${draggedCard && (draggedCard.subType === 'fightspells' || draggedCard.subType === 'modifier') ? 'ring-4 ring-red-500 ring-offset-4 ring-offset-black animate-pulse cursor-crosshair' : ''}`}
+                                        onDragOver={(e) => {
+                                            if (draggedCard && (draggedCard.subType === 'fightspells' || draggedCard.subType === 'modifier')) {
+                                                e.preventDefault();
+                                            }
+                                        }}
+                                        onDrop={(e) => {
+                                            e.preventDefault();
+                                            if (draggedCard && (draggedCard.subType === 'fightspells' || draggedCard.subType === 'modifier')) {
+                                                playFightSpell(draggedCard.id, 'monster');
+                                                setDraggedCard(null);
+                                            }
+                                        }}
+                                    >
+                                        <div className="absolute -inset-4 bg-red-600/20 blur-xl rounded-full animate-pulse"></div>
+                                        <Card card={currentRoom.currentCombat.monster} />
+                                        <div className="absolute -bottom-4 -right-4 bg-red-600 text-white text-3xl font-black px-3 py-1 rounded border-2 border-white shadow-lg flex flex-col items-center">
+                                            <span>{currentRoom.currentCombat.monster.level + (currentRoom.currentCombat.monsterBonus || 0)}</span>
+                                            {currentRoom.currentCombat.monsterBonus > 0 && (
+                                                <span className="text-[10px] text-yellow-300">+{currentRoom.currentCombat.monsterBonus}</span>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {showSpellTarget && (
+                                    <div className="mt-4 flex flex-col items-center gap-2 bg-slate-800 p-4 rounded-xl border border-amber-500">
+                                        <div className="text-amber-500 font-bold text-sm">Hedef Seç: {showSpellTarget.name}</div>
+                                        <div className="flex gap-4">
+                                            <button onClick={() => playFightSpell(showSpellTarget.id, 'player')} className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded font-bold">OYUNCU (+{showSpellTarget.bonus})</button>
+                                            <button onClick={() => playFightSpell(showSpellTarget.id, 'monster')} className="bg-red-600 hover:bg-red-500 px-4 py-2 rounded font-bold">CANAVAR (+{showSpellTarget.bonus})</button>
+                                        </div>
+                                        <button onClick={() => setShowSpellTarget(null)} className="text-xs text-slate-400 mt-2">İptal</button>
+                                    </div>
+                                )}
+
+                                {isMe ? (
+                                    <div className="flex flex-col items-center gap-4 w-full">
+                                        <button
+                                            onClick={() => socket.emit('resolveCombat', { roomId: currentRoom.id })}
+                                            className={`w-full max-w-md text-white font-black py-4 px-10 rounded-xl shadow-2xl text-2xl transition-all hover:scale-105 active:scale-95 border-b-8
+                                        ${(combatantPower + (currentRoom.currentCombat.playerBonus || 0)) > (currentRoom.currentCombat.monster.level + (currentRoom.currentCombat.monsterBonus || 0))
+                                                    ? 'bg-gradient-to-r from-green-600 to-green-500 border-green-800 hover:from-green-500 hover:to-green-400 shadow-[0_0_30px_rgba(34,197,94,0.4)]'
+                                                    : 'bg-gradient-to-r from-red-800 to-red-600 border-red-950 hover:from-red-700 hover:to-red-500 shadow-[0_0_30px_rgba(220,38,38,0.4)]'}`}
+                                        >
+                                            {(combatantPower + (currentRoom.currentCombat.playerBonus || 0)) > (currentRoom.currentCombat.monster.level + (currentRoom.currentCombat.monsterBonus || 0)) ? "ŞİMDİ KAZAN! (WIN)" : "KAYBET... (LOSE)"}
+                                        </button>
+                                        <p className="text-slate-500 text-xs italic">Süre dolduğunda otomatik çözülecek</p>
+                                    </div>
+                                ) : (
+                                    <div className="w-full flex flex-col items-center">
+                                        <div className="text-slate-300 font-bold text-lg mb-2 flex items-center gap-2">
+                                            <span className="inline-block w-2 h-2 bg-amber-500 rounded-full animate-ping"></span>
+                                            {combatant?.name} ter döküyor...
+                                        </div>
+                                        <p className="text-slate-500 text-xs">Müdahale etmek için bir kart oyna! (+2 sn)</p>
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })()}
+
+
+                    {/* DOOR DECK */}
+                    <div
+                        onClick={() => {
+                            if (myTurn) {
+                                socket.emit('drawDoorCard', { roomId: currentRoom.id });
+                            } else {
+                                alert("Sadece kendi turunda kart çekebilirsin!");
+                            }
+                        }}
+                        className={`w-32 h-44 bg-slate-900 border-4 border-slate-700 rounded-xl flex flex-col items-center justify-center cursor-pointer hover:border-amber-600 transition-colors shadow-xl group relative select-none
+                        ${!myTurn ? 'opacity-70 cursor-not-allowed' : ''}`}
+                    >
+                        <div className="absolute inset-2 border-2 border-dashed border-slate-600 rounded opacity-50"></div>
+                        <div className="z-10 text-center">
+                            <div className="text-4xl mb-2">🚪</div>
+                            <div className="font-bold text-slate-300">KAPI DESTESİ</div>
+                            <div className="text-xs text-slate-500 mt-1">{currentRoom.doorDeck?.length || 0} Kart</div>
+                        </div>
+                        <div className="absolute bottom-2 text-[10px] text-amber-500 opacity-0 group-hover:opacity-100 transition-opacity font-bold">
+                            ÇEKMEK İÇİN TIKLA
+                        </div>
                     </div>
-                    <div onDragOver={(e) => e.preventDefault()} onDrop={onDropDiscard}
-                        className={`w-36 h-[12rem] border-4 border-dashed rounded-2xl flex flex-col items-center justify-center transition-all bg-slate-950/30
-                            ${draggedCard ? 'border-red-500 bg-red-900/20 scale-110' : 'border-slate-800'}`}>
-                        <div className="text-3xl opacity-20">🗑️</div>
-                        <div className="font-black text-[10px] text-slate-700 uppercase tracking-widest">ISKAT / SAT</div>
+
+                    {/* DISCARD PILE */}
+                    <div
+                        className={`w-32 h-44 border-4 border-dashed rounded-xl flex items-center justify-center transition-all relative
+                        ${draggedCard ? 'border-red-500 bg-red-900/20 scale-105 shadow-[0_0_15px_rgba(220,38,38,0.5)]' : 'border-slate-600 bg-slate-800/50'}`}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={onDropDiscard}
+                    >
+                        <div className="text-center text-slate-500 text-xs pointer-events-none">
+                            <div className="font-bold mb-1">ÇÖP / SAT</div>
+                            <div className="text-[10px] mb-2">(Sürükle Bırak)</div>
+                            <div>{currentRoom.discardPile?.length || 0} Çöp</div>
+                            {currentRoom.discardPile?.length > 0 && <div className="text-[10px] mt-1 text-slate-400">Son: {currentRoom.discardPile[currentRoom.discardPile.length - 1].name}</div>}
+                        </div>
+                    </div>
+
+                    {/* TREASURE DECK */}
+                    <div
+                        onClick={() => {
+                            if (myTurn) {
+                                socket.emit('drawTreasureCard', { roomId: currentRoom.id });
+                            } else {
+                                alert("Sadece kendi turunda kart çekebilirsin!");
+                            }
+                        }}
+                        className={`w-32 h-44 bg-slate-900 border-4 border-yellow-700 rounded-xl flex flex-col items-center justify-center cursor-pointer hover:border-yellow-500 transition-colors shadow-xl group relative select-none
+                        ${!myTurn ? 'opacity-70 cursor-not-allowed' : ''}`}
+                    >
+                        <div className="absolute inset-2 border-2 border-dashed border-yellow-600 rounded opacity-50 bg-yellow-900/10"></div>
+                        <div className="z-10 text-center">
+                            <div className="text-4xl mb-2">💰</div>
+                            <div className="font-bold text-yellow-500">HAZİNE</div>
+                            <div className="text-xs text-slate-400 mt-1">{currentRoom.treasureDeck?.length || 0} Kart</div>
+                        </div>
+                        <div className="absolute bottom-2 text-[10px] text-yellow-400 opacity-0 group-hover:opacity-100 transition-opacity font-bold">
+                            ÇEKMEK İÇİN TIKLA
+                        </div>
                     </div>
                 </div>
-                <div className="w-full flex justify-center gap-6 overflow-x-auto p-4">
-                    {currentRoom.players.filter((p: any) => p.id !== socket.id).map((p: any) => (
-                        <div key={p.id} className="bg-slate-800/40 p-4 rounded-3xl border-2 border-slate-700/50 flex flex-col items-center min-w-[320px]">
-                            <div className="font-black text-lg uppercase mb-3">{p.name}</div>
-                            <div className="flex items-center gap-4 mb-4 text-[11px] font-black">
-                                <span className="bg-amber-600 text-slate-900 px-3 py-1 rounded-full">Lvl {p.level}</span>
-                                <span className="bg-red-800 px-3 py-1 rounded-full">⚔️ {getCombatStrength(p)} Güç</span>
-                            </div>
+
+                {/* OTHER PLAYERS */}
+                {currentRoom.players.filter((p: any) => p.id !== socket.id).map((p: any) => (
+                    <div key={p.id} className="bg-slate-800 p-4 rounded border border-slate-600 flex flex-col items-center z-0">
+                        <div className="font-bold text-lg mb-1">{p.name}</div>
+                        <div className="flex items-center gap-2 mb-2 text-xs">
+                            <span className="bg-amber-600 px-1 rounded">Lvl {p.level}</span>
+                            {p.race && <span className="bg-green-700 px-1 rounded">{p.race.name}</span>}
+                            {p.class && <span className="bg-blue-700 px-1 rounded">{p.class.name}</span>}
+                            <span className="bg-red-800 px-1 rounded">⚔️ {getCombatStrength(p)}</span>
+                        </div>
+
+                        <div className="mb-2 w-full">
                             <PlayerInventory player={p} />
                         </div>
-                    ))}
-                </div>
+
+                        <div className="text-sm text-slate-400">Elindeki Kart: {p.hand.length}</div>
+                        <div className="mt-1 flex justify-center gap-1">
+                            {p.hand.map((_: any, i: number) => (
+                                <div key={i} className="w-3 h-5 bg-slate-600 rounded border border-slate-500"></div>
+                            ))}
+                        </div>
+                    </div>
+                ))}
             </div>
 
-            {/* Bottom Bar */}
-            <div className="bg-slate-800/95 border-t-4 border-slate-700 p-6 backdrop-blur-xl z-30">
-                <div className="flex justify-between items-center mb-6">
+            {/* MY AREA */}
+            <div className="bg-slate-800 p-4 border-t border-slate-700">
+                <div className="flex justify-between items-end mb-4">
                     <div>
-                        <div className="flex items-center gap-4 mb-2">
-                            <h2 className="text-3xl font-black uppercase">{myPlayer?.name}</h2>
-                            <div className="flex items-center gap-2">
-                                <span className="text-xs font-black bg-amber-500 text-slate-900 px-4 py-1.5 rounded-full">LVL {myPlayer?.level}</span>
-                                <span className="text-xs font-black bg-blue-600 px-4 py-1.5 rounded-full">⚔️ {myPower} GÜÇ</span>
-                                <span className="text-xs font-black bg-yellow-600 text-slate-950 px-4 py-1.5 rounded-full tracking-widest">🪙 {myPlayer?.gold || 0} ALTIN</span>
-                            </div>
+                        <h2 className="text-2xl font-bold flex items-center gap-2">
+                            {myPlayer?.name}
+                            <span className="text-sm bg-amber-600 px-2 rounded">Lvl {myPlayer?.level}</span>
+                            {myPlayer?.race && <span className="text-sm bg-green-700 px-2 rounded">{myPlayer.race.name}</span>}
+                            {myPlayer?.class && <span className="text-sm bg-blue-700 px-2 rounded">{myPlayer.class.name}</span>}
+                            <span className="text-sm bg-red-800 px-2 rounded flex items-center gap-1">
+                                ⚔️ {myPower}
+                            </span>
+                            <span className="text-sm bg-yellow-600 text-black font-bold px-2 rounded flex items-center gap-1">
+                                🪙 {myPlayer?.gold || 0}
+                            </span>
+                        </h2>
+                        <div className="mt-2">
+                            <PlayerInventory player={myPlayer} />
                         </div>
-                        <PlayerInventory player={myPlayer} />
                     </div>
-                    {myTurn && <button onClick={() => socket.emit('endTurn', currentRoom.id)}
-                        className="bg-blue-600 hover:bg-blue-500 text-white font-black py-4 px-12 rounded-2xl shadow-[0_4px_0_0_#1e3a8a] transition-all uppercase tracking-widest text-sm">Turu Bitir</button>}
+                    {myTurn && (
+                        <div className="flex gap-2">
+                            {/* BUY LEVEL BUTTON */}
+                            <button
+                                onClick={() => socket.emit('buyLevel', { roomId: currentRoom.id })}
+                                disabled={myPlayer.gold < 1000 || myPlayer.level >= 9}
+                                className={`
+                                    flex flex-col items-center justify-center px-4 py-1 rounded-lg border-b-4 transition-all
+                                    ${myPlayer.gold >= 1000 && myPlayer.level < 9
+                                        ? 'bg-yellow-600 hover:bg-yellow-500 border-yellow-800 text-black cursor-pointer active:border-b-0 active:translate-y-1'
+                                        : 'bg-slate-700 border-slate-900 text-slate-500 cursor-not-allowed opacity-50'}
+                                `}
+                                title="1000 Altın karşılığında 1 Seviye al (Max Lvl 9)"
+                            >
+                                <span className="font-bold text-sm">Seviye Al</span>
+                                <span className="text-[10px] font-mono">1000 G</span>
+                            </button>
+
+                            {/* END TURN BUTTON */}
+                            <button
+                                onClick={() => {
+                                    if (myPlayer.hand.length > 5) {
+                                        alert(`Elinizde ${myPlayer.hand.length} kart var! Turu bitirmek için en fazla 5 kartınız olmalı. Fazlalıkları atmak için kartların üzerindeki çarpı işaretini kullanın.`);
+                                        return;
+                                    }
+                                    socket.emit('endTurn', currentRoom.id);
+                                }}
+                                className={`${myPlayer.hand.length > 5 ? 'bg-red-600 hover:bg-red-500 animate-pulse' : 'bg-blue-600 hover:bg-blue-500'} text-white font-bold py-2 px-6 rounded-lg shadow-lg border-b-4 ${myPlayer.hand.length > 5 ? 'border-red-800' : 'border-blue-800'} active:border-b-0 active:translate-y-1 transition-all`}
+                            >
+                                {myPlayer.hand.length > 5 ? `Fazla Kart Var (${myPlayer.hand.length}/5)` : 'Turu Bitir'}
+                            </button>
+                        </div>
+                    )}
                 </div>
-                <div className="flex gap-4 overflow-x-auto py-4">
+
+                {/* MY HAND */}
+                <div className="flex gap-4 overflow-x-auto pb-4 px-2 custom-scrollbar">
                     {myPlayer?.hand.map((card: any, idx: number) => (
-                        <div key={`${card.id}-${idx}`} draggable={true} onDragStart={(e) => onDragStart(e, card)} className="transition-transform hover:-translate-y-4">
-                            <Card card={card} isPlayable={myTurn || currentRoom.phase === 'combat'} onClick={() => playCard(card.id)} onDiscard={() => { if (confirm(`${card.name} kartını atmak istiyor musunuz?`)) socket.emit('discardCard', { roomId: currentRoom.id, cardId: card.id }); }} />
+                        <div
+                            key={`${card.id}-${idx}`}
+                            className="flex-shrink-0"
+                            draggable={myTurn}
+                            onDragStart={(e) => onDragStart(e, card)}
+                        >
+                            <Card
+                                card={card}
+                                isPlayable={myTurn}
+                                onClick={() => {
+                                    if (card.subType === 'fightspells') {
+                                        if (currentRoom.currentCombat?.status === 'active') {
+                                            setShowSpellTarget(card);
+                                        } else {
+                                            alert("Savaş büyülerini sadece savaş sırasında kullanabilirsin!");
+                                        }
+                                    } else {
+                                        socket.emit('playCard', { roomId: currentRoom.id, cardId: card.id });
+                                    }
+                                }}
+                                onDiscard={() => {
+                                    if (confirm(`${card.name} kartını atmak (satmak) istiyor musunuz?`)) {
+                                        socket.emit('discardCard', { roomId: currentRoom.id, cardId: card.id });
+                                    }
+                                }}
+                            />
                         </div>
                     ))}
                 </div>

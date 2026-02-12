@@ -8,7 +8,7 @@ interface GamePageProps {
 
 const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
     const myPlayer = currentRoom.players.find((p: any) => p.id === socket.id);
-    const myTurn = currentRoom.players[currentRoom.currentTurn].id === socket.id;
+    const myTurn = (currentRoom.players[currentRoom.currentTurn]?.id === socket.id);
 
     // Calculate Combat Power Frontend Side
     const getCombatStrength = (player: any) => {
@@ -23,6 +23,9 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
     };
 
     const myPower = getCombatStrength(myPlayer);
+
+    // State for spell targeting
+    const [showSpellTarget, setShowSpellTarget] = React.useState<any>(null);
 
     // Drag & Drop Handlers
     const [draggedCard, setDraggedCard] = React.useState<any>(null);
@@ -50,24 +53,25 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
         }
     };
 
-    // Calculates Total Wealth (Hands + Equipment)
-    const getMyWealth = () => {
-        if (!myPlayer) return 0;
-        let total = 0;
-        // Check hand
-        myPlayer.hand.forEach((card: any) => {
-            if (card.goldValue) total += card.goldValue;
-        });
-        // Check equipment
-        if (myPlayer.equipment) {
-            myPlayer.equipment.forEach((item: any) => {
-                if (item.goldValue) total += item.goldValue;
-            });
+    const onDropBackpack = (e: React.DragEvent) => {
+        e.preventDefault();
+        if (draggedCard) {
+            socket.emit('moveToBackpack', { roomId: currentRoom.id, cardId: draggedCard.id });
+            setDraggedCard(null);
         }
-        return total;
     };
 
-    const myWealth = getMyWealth();
+    const playFromBackpack = (cardId: string) => {
+        socket.emit('playFromBackpack', { roomId: currentRoom.id, cardId });
+    };
+
+    const takeFromBackpack = (cardId: string) => {
+        socket.emit('removeFromBackpack', { roomId: currentRoom.id, cardId });
+    };
+
+    const playCard = (cardId: string) => {
+        socket.emit('playCard', { roomId: currentRoom.id, cardId });
+    };
 
     // Inventory Slot Component
     const InventorySlot = ({ label, item, type = "item" }: { label: string, item: any, type?: string }) => (
@@ -100,10 +104,9 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
 
         return (
             <div className="flex gap-4 items-start">
-                {/* Equipment Slots */}
                 <div className="flex-1 flex gap-2 bg-slate-900/50 p-2 rounded-lg border border-slate-700 min-h-[5rem] items-center justify-center transition-colors hover:bg-slate-800/80"
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={onDropInventory}>
+                    onDragOver={(e) => isMyPlayer && e.preventDefault()}
+                    onDrop={isMyPlayer ? onDropInventory : undefined}>
                     <InventorySlot label="Irk" item={player.race} type="race" />
                     <InventorySlot label="Sınıf" item={player.class} type="class" />
                     <div className="w-px bg-slate-600 mx-1 self-stretch"></div>
@@ -117,7 +120,6 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
                     ))}
                 </div>
 
-                {/* Backpack Section */}
                 <div className={`w-48 bg-slate-900/50 p-2 rounded-lg border flex flex-col transition-all min-h-[5.5rem]
                     ${isMyPlayer && draggedCard ? 'border-amber-500 bg-amber-900/20 scale-105' : 'border-slate-700'}`}
                     onDragOver={(e) => isMyPlayer && e.preventDefault()}
@@ -167,9 +169,6 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
                                 )}
                             </div>
                         ))}
-                        {(!player.backpack || player.backpack.length === 0) && (
-                            <div className="text-[9px] text-slate-600 italic py-2 w-full text-center">Boş</div>
-                        )}
                     </div>
                 </div>
             </div>
@@ -178,208 +177,169 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
 
     return (
         <div className="min-h-screen bg-slate-900 text-white flex flex-col overflow-hidden relative">
-
-            {/* 1. POPUP OVERLAYS (FIXED TO COVER EVERYTHING) */}
+            {/* Combat Overlay */}
             {currentRoom.currentCombat && currentRoom.currentCombat.status === 'active' && (() => {
                 const combatant = currentRoom.players.find((p: any) => p.id === currentRoom.currentCombat.playerId);
-                const combatantPower = getCombatStrength(combatant);
                 const isMe = socket.id === combatant?.id;
+                const monster = currentRoom.currentCombat.monster;
+                const playerBonus = currentRoom.currentCombat.playerBonus || 0;
+                const monsterBonus = currentRoom.currentCombat.monsterBonus || 0;
+                const combatantPower = getCombatStrength(combatant) + playerBonus;
+                const monsterPower = monster.level + monsterBonus;
 
                 return (
-                            <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-50 flex flex-col items-center bg-black/90 p-6 rounded-xl border-4 border-red-600 shadow-[0_0_50px_rgba(220,38,38,0.5)] min-w-[500px]">
-                                <h2 className="text-3xl font-extrabold text-red-500 mb-4 animate-pulse">DÖVÜŞ VAR!</h2>
-                                <div className="flex items-center gap-8 justify-center w-full">
-                                    {/* Player Stats */}
-                                    <div className="text-center flex flex-col items-center">
-                                        <div className="text-white font-bold text-xl">{combatant?.name}</div>
-                                        <div className="text-sm text-slate-400">Lvl {combatant?.level}</div>
-                                        <div className="text-5xl font-bold text-blue-400 mt-2 flex items-center gap-2">
-                                            <span className="text-2xl">⚔️</span> {combatantPower}
-                                        </div>
-                                    </div>
-
-                                    <div className="text-4xl font-bold text-slate-500 italic">VS</div>
-
-                                    {/* Monster Card */}
-                                    <div className="scale-125 transform transition-transform hover:scale-150 z-10">
-                                        <Card card={currentRoom.currentCombat.monster} />
-                                    </div>
-                                </div>
-
-                                {isMe ? (
-                                    <button
-                                        onClick={() => socket.emit('resolveCombat', { roomId: currentRoom.id })}
-                                        className={`mt-8 text-white font-bold py-3 px-8 rounded-full shadow-lg text-xl transition-all hover:scale-105 active:scale-95
-                                    ${combatantPower > currentRoom.currentCombat.monster.level
-                                                ? 'bg-gradient-to-r from-green-600 to-green-500 hover:from-green-500 hover:to-green-400 shadow-[0_0_20px_rgba(34,197,94,0.5)]'
-                                                : 'bg-gradient-to-r from-red-800 to-red-600 hover:from-red-700 hover:to-red-500 shadow-[0_0_20px_rgba(220,38,38,0.5)]'}`}
-                                    >
-                                        {combatantPower > currentRoom.currentCombat.monster.level ? "DÖVÜŞÜ KAZAN! (WIN)" : "KAYBET... (LOSE)"}
-                                    </button>
-                                ) : (
-                                    <div className="mt-8 text-slate-400 animate-pulse font-bold">
-                                        {combatant?.name} dövüşüyor...
-                                    </div>
-                                )}
-                            </div>
-                            <div className="text-center mb-10">
-                                <div className="text-white font-black text-2xl mb-1">{drawer?.name}</div>
-                                <div className="text-slate-400 font-bold tracking-widest uppercase text-xs">
-                                    {isPublic
-                                        ? (card.subType === 'curse' ? 'BİR LANETE YAKALANDI!' : 'YENİ BİR ŞEYLER BULDUN...')
-                                        : 'ODADAN BİR KART AŞIRDI...'}
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+                        <div className="relative flex flex-col items-center bg-black/90 p-8 rounded-2xl border-4 border-red-600 shadow-[0_0_50px_rgba(220,38,38,0.5)] min-w-[600px] max-w-4xl text-center">
+                            <h2 className="text-4xl font-black text-red-500 mb-8 animate-pulse uppercase">DÖVÜŞ BAŞLADI!</h2>
+                            <div className="mb-6">
+                                <div className={`text-4xl font-black px-6 py-2 rounded-full border-4 shadow-lg ${(currentRoom.currentCombat.timer || 0) <= 3 ? 'text-red-500 border-red-500 animate-bounce' : 'text-amber-500 border-amber-500'
+                                    }`}>
+                                    ⏱️ {currentRoom.currentCombat.timer || 0}s
                                 </div>
                             </div>
-                            {
-                    isMe ? (
-                        <button
-                            onClick={() => socket.emit('takeCard', { roomId: currentRoom.id })}
-                            className="bg-gradient-to-r from-amber-600 to-amber-400 hover:from-amber-500 hover:to-amber-300 text-white font-black py-4 px-16 rounded-full shadow-[0_0_30px_rgba(245,158,11,0.4)] transition-all hover:scale-110 active:scale-95 uppercase tracking-widest text-lg"
-                        >
-                            KARTIMI AL
-                        </button>
-                    ) : (
-                        <div className="text-amber-500/30 animate-pulse font-black text-sm uppercase tracking-[0.2rem]">
-                            OYUNCU BEKLENİYOR...
+                            <div className="flex items-center gap-12 justify-center w-full mb-8">
+                                <div className="flex flex-col items-center">
+                                    <div className="text-white font-black text-2xl uppercase">{combatant?.name}</div>
+                                    <div className="text-7xl font-black text-blue-400 mt-4">⚔️ {combatantPower}</div>
+                                    {playerBonus !== 0 && <div className="text-green-400 font-bold animate-pulse">({playerBonus > 0 ? '+' : ''}{playerBonus} Bonus)</div>}
+                                </div>
+                                <div className="text-5xl font-black text-slate-700">VS</div>
+                                <div className="flex flex-col items-center"
+                                    onDragOver={(e) => e.preventDefault()}
+                                    onDrop={(e) => {
+                                        e.preventDefault();
+                                        if (draggedCard && draggedCard.subType === 'fightspells') {
+                                            setShowSpellTarget(draggedCard);
+                                            setDraggedCard(null);
+                                        }
+                                    }}
+                                >
+                                    <div className="text-red-500 font-black text-2xl uppercase">{monster.name}</div>
+                                    <div className="scale-110 my-4"><Card card={monster} /></div>
+                                    <div className="text-4xl font-black text-red-500">👹 {monsterPower}</div>
+                                    {monsterBonus !== 0 && <div className="text-red-400 font-bold animate-pulse">({monsterBonus > 0 ? '+' : ''}{monsterBonus} Bonus)</div>}
+                                </div>
+                            </div>
+                            {isMe ? (
+                                <button onClick={() => socket.emit('resolveCombat', { roomId: currentRoom.id })}
+                                    className={`mt-12 text-white font-black py-5 px-20 rounded-full shadow-2xl text-2xl transition-all hover:scale-110 active:scale-95 uppercase ${combatantPower > monsterPower ? 'bg-gradient-to-r from-green-600 to-green-400 shadow-[0_0_40px_rgba(34,197,94,0.6)]' : 'bg-gradient-to-r from-red-800 to-red-600 shadow-[0_0_40px_rgba(153,27,27,0.6)]'
+                                        }`}>
+                                    {combatantPower > monsterPower ? "🦁 KAZAN! (WIN)" : "💀 KAYBET... (LOSE)"}
+                                </button>
+                            ) : (
+                                <div className="mt-12 text-slate-500 font-black text-sm uppercase tracking-widest">{combatant?.name} DÖVÜŞÜYOR...</div>
+                            )}
                         </div>
-                    )
-                }
-                        </div>
-                    </div >
+                    </div>
                 );
-            }) ()}
+            })()}
 
-{/* 2. TOP BAR */ }
-<div className="bg-slate-800 p-2 flex justify-between items-center border-b border-slate-700">
-    <div className="font-bold text-amber-500 text-xl">Anadolu Munchkin - Oda: {currentRoom.id}</div>
-    <div className="flex gap-4 items-center">
-        <div className={`px-4 py-1 rounded font-bold ${myTurn ? 'bg-green-600 animate-pulse' : 'bg-slate-600'}`}>
-            {myTurn ? 'SENİN SIRAN!' : `Sıra: ${currentRoom.players[currentRoom.currentTurn].name}`}
-        </div>
-        {myTurn && (
-            <div className="bg-blue-900/50 px-3 py-1 rounded border border-blue-700 text-xs font-bold text-blue-200 uppercase tracking-wider">
-                AŞAMA: {
-                    currentRoom.phase === 'kick' ? 'Kapıyı Tekmele' :
-                        currentRoom.phase === 'action' ? 'Bela Ara / Yağmala' :
-                            currentRoom.phase === 'combat' ? 'Dövüş' : 'Tur Sonu'
-                }
-            </div>
-        )}
-    </div>
-    <button className="bg-red-900 px-3 py-1 rounded text-xs hover:bg-red-700">Çık</button>
-</div>
+            {/* Draw Overlay */}
+            {currentRoom.pendingDraw && (() => {
+                const drawer = currentRoom.players.find((p: any) => p.id === currentRoom.pendingDraw.playerId);
+                const isMe = socket.id === drawer?.id;
+                const { card, isPublic } = currentRoom.pendingDraw;
+                return (
+                    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/95 backdrop-blur-md">
+                        <div className="flex flex-col items-center text-center">
+                            <div className="mb-6">
+                                <div className="text-white font-black text-2xl">{drawer?.name}</div>
+                                <div className="text-slate-400 font-bold uppercase text-xs">{isPublic ? 'BİR KART ÇEKTİ!' : 'GİZLİ BİR KART ALDI...'}</div>
+                            </div>
+                            <div className="mb-10 scale-150">
+                                {isMe || isPublic ? <Card card={card} /> : <div className="w-48 h-72 bg-slate-800 border-4 border-slate-700 rounded-2xl flex items-center justify-center font-black text-7xl text-slate-600">?</div>}
+                            </div>
+                            {isMe && <button onClick={() => socket.emit('takeCard', { roomId: currentRoom.id })}
+                                className="bg-amber-600 hover:bg-amber-500 text-white font-black py-4 px-16 rounded-full shadow-2xl text-lg uppercase tracking-widest">KARTIMI AL</button>}
+                        </div>
+                    </div>
+                );
+            })()}
 
-{/* 3. MAIN CONTENT AREA */ }
-<div className="flex-1 p-4 flex flex-col justify-around items-center relative overflow-hidden">
-    {/* DECKS ROW */}
-    <div className="flex gap-12 items-center z-10">
-        {/* DOOR DECK */}
-        <div
-            onClick={() => {
-                if (myTurn) {
-                    if (currentRoom.phase === 'kick') socket.emit('drawDoorCard', { roomId: currentRoom.id });
-                    else if (currentRoom.phase === 'action') socket.emit('lootTheRoom', { roomId: currentRoom.id });
-                }
-            }}
-            className={`w-32 h-44 bg-slate-900 border-4 rounded-xl flex flex-col items-center justify-center cursor-pointer transition-all shadow-xl group relative select-none
-                            ${myTurn && (currentRoom.phase === 'kick' || currentRoom.phase === 'action') ? 'border-amber-600 hover:border-amber-400 hover:scale-105' : 'border-slate-700 opacity-70 cursor-not-allowed'}`}
-        >
-            <div className="absolute inset-2 border-2 border-dashed border-slate-600 rounded opacity-50"></div>
-            <div className="z-10 text-center">
-                <div className="text-4xl mb-2">🚪</div>
-                <div className="font-bold text-slate-300">KAPI</div>
-                <div className="text-xs text-slate-500 mt-1">{currentRoom.doorDeck?.length || 0} Kart</div>
-            </div>
-            {myTurn && currentRoom.phase === 'kick' && <div className="absolute bottom-2 text-[10px] text-amber-500 font-bold animate-bounce uppercase">Tekmele!</div>}
-            {myTurn && currentRoom.phase === 'action' && <div className="absolute bottom-2 text-[10px] text-green-500 font-bold animate-pulse uppercase">Yağmala!</div>}
-        </div>
-
-        {/* DISCARD PILE */}
-        <div
-            className={`w-32 h-44 border-4 border-dashed rounded-xl flex items-center justify-center transition-all relative
-                            ${draggedCard ? 'border-red-500 bg-red-900/20 scale-105 shadow-[0_0_15px_rgba(220,38,38,0.5)]' : 'border-slate-600 bg-slate-800/50'}`}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={onDropDiscard}
-        >
-            <div className="text-center text-slate-500 text-xs pointer-events-none">
-                <div className="font-bold mb-1">ÇÖP / SAT</div>
-                <div>{currentRoom.discardPile?.length || 0} Kart</div>
-            </div>
-        </div>
-
-        {/* TREASURE DECK */}
-        <div className="w-32 h-44 bg-slate-900 border-4 border-yellow-700 rounded-xl flex flex-col items-center justify-center opacity-70 cursor-not-allowed relative">
-            <div className="absolute inset-2 border-2 border-dashed border-yellow-600 rounded opacity-50 bg-yellow-900/10"></div>
-            <div className="z-10 text-center">
-                <div className="text-4xl mb-2">💰</div>
-                <div className="font-bold text-yellow-500">HAZİNE</div>
-            </div>
-        </div>
-    </div>
-
-    {/* OTHER PLAYERS ROWS */}
-    <div className="w-full flex justify-center gap-4 overflow-x-auto p-2">
-        {currentRoom.players.filter((p: any) => p.id !== socket.id).map((p: any) => (
-            <div key={p.id} className="bg-slate-800 p-3 rounded-xl border border-slate-600 flex flex-col items-center min-w-[180px]">
-                <div className="font-bold text-base mb-1">{p.name}</div>
-                <div className="flex items-center gap-2 mb-2 text-[10px]">
-                    <span className="bg-amber-600 px-1 rounded">Lvl {p.level}</span>
-                    <span className="bg-red-800 px-1 rounded">⚔️ {getCombatStrength(p)}</span>
+            {/* Spell Modal */}
+            {showSpellTarget && (
+                <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/90 backdrop-blur-md p-4">
+                    <div className="bg-slate-900 p-8 rounded-3xl border-4 border-amber-600 shadow-2xl max-w-lg w-full text-center">
+                        <h3 className="text-3xl font-black text-amber-500 mb-8 uppercase">HEDEF SEÇ!</h3>
+                        <div className="flex flex-col gap-4">
+                            <button onClick={() => { socket.emit('playFightSpell', { roomId: currentRoom.id, cardId: showSpellTarget.id, target: 'player' }); setShowSpellTarget(null); }}
+                                className="bg-blue-900/40 hover:bg-blue-600/60 p-6 rounded-2xl border-2 border-blue-500 transition-all font-black text-xl flex justify-between items-center text-blue-400 uppercase">OYUNCU 🛡️</button>
+                            <button onClick={() => { socket.emit('playFightSpell', { roomId: currentRoom.id, cardId: showSpellTarget.id, target: 'monster' }); setShowSpellTarget(null); }}
+                                className="bg-red-900/40 hover:bg-red-600/60 p-6 rounded-2xl border-2 border-red-500 transition-all font-black text-xl flex justify-between items-center text-red-500 uppercase">CANAVAR 👹</button>
+                        </div>
+                        <button onClick={() => setShowSpellTarget(null)} className="mt-8 text-slate-500 font-bold uppercase text-xs">Vazgeç</button>
+                    </div>
                 </div>
-                <PlayerInventory player={p} />
-            </div>
-        ))}
-    </div>
-</div>
+            )}
 
-{/* 4. MY AREA (BOTTOM FIXED) */ }
-<div className="bg-slate-800 p-4 border-t border-slate-700">
-    <div className="flex justify-between items-end mb-4">
-        <div>
-            <h2 className="text-xl font-black flex items-center gap-3">
-                {myPlayer?.name}
-                <span className="text-xs bg-amber-600 px-2 py-0.5 rounded-full">LVL {myPlayer?.level}</span>
-                <span className="text-xs bg-red-700 px-2 py-0.5 rounded-full flex items-center gap-1">⚔️ {myPower}</span>
-                <span className="text-xs bg-yellow-600 text-black font-black px-2 py-0.5 rounded-full flex items-center gap-1">🪙 {myPlayer?.gold || 0}</span>
-            </h2>
-            <div className="mt-2">
-                <PlayerInventory player={myPlayer} />
+            {/* Top Bar */}
+            <div className="bg-slate-800 p-2 flex justify-between items-center border-b border-slate-700 shadow-md z-20">
+                <div className="font-black text-amber-500 text-xl tracking-tighter uppercase px-2">Anadolu Munchkin - {currentRoom.id}</div>
+                <div className="flex gap-4 items-center">
+                    <div className={`px-4 py-1.5 rounded-full border-2 font-black text-sm ${myTurn ? 'bg-green-600/20 border-green-500 text-green-400 animate-pulse' : 'bg-slate-700 border-slate-600 text-slate-400'}`}>
+                        {myTurn ? '👉 SENİN SIRAN!' : `⏳ SIRA: ${currentRoom.players[currentRoom.currentTurn]?.name}`}
+                    </div>
+                </div>
+                <button className="bg-red-900/50 hover:bg-red-700 text-red-400 px-4 py-1.5 rounded-full text-[10px] font-bold uppercase">Çıkış</button>
+            </div>
+
+            {/* Main Area */}
+            <div className="flex-1 p-4 flex flex-col justify-around items-center relative overflow-hidden">
+                <div className="flex gap-12 items-center z-10">
+                    <div onClick={() => { if (myTurn) { if (currentRoom.phase === 'kick') socket.emit('drawDoorCard', { roomId: currentRoom.id }); else if (currentRoom.phase === 'action') socket.emit('lootTheRoom', { roomId: currentRoom.id }); } }}
+                        className={`w-32 h-44 bg-slate-950 border-4 rounded-xl flex flex-col items-center justify-center cursor-pointer transition-all shadow-2xl group relative
+                            ${myTurn && (currentRoom.phase === 'kick' || currentRoom.phase === 'action') ? 'border-amber-600 hover:border-amber-400 hover:scale-110' : 'border-slate-800 opacity-50 grayscale'}`}>
+                        <div className="text-5xl mb-2 group-hover:scale-125 transition-transform">🚪</div>
+                        <div className="font-black text-slate-300 tracking-widest text-sm">KAPI</div>
+                        <div className="text-[10px] text-amber-500 mt-1 font-bold">{currentRoom.doorDeck?.length || 0} KART</div>
+                    </div>
+                    <div onDragOver={(e) => e.preventDefault()} onDrop={onDropDiscard}
+                        className={`w-36 h-[12rem] border-4 border-dashed rounded-2xl flex flex-col items-center justify-center transition-all bg-slate-950/30
+                            ${draggedCard ? 'border-red-500 bg-red-900/20 scale-110' : 'border-slate-800'}`}>
+                        <div className="text-3xl opacity-20">🗑️</div>
+                        <div className="font-black text-[10px] text-slate-700 uppercase tracking-widest">ISKAT / SAT</div>
+                    </div>
+                </div>
+                <div className="w-full flex justify-center gap-6 overflow-x-auto p-4">
+                    {currentRoom.players.filter((p: any) => p.id !== socket.id).map((p: any) => (
+                        <div key={p.id} className="bg-slate-800/40 p-4 rounded-3xl border-2 border-slate-700/50 flex flex-col items-center min-w-[320px]">
+                            <div className="font-black text-lg uppercase mb-3">{p.name}</div>
+                            <div className="flex items-center gap-4 mb-4 text-[11px] font-black">
+                                <span className="bg-amber-600 text-slate-900 px-3 py-1 rounded-full">Lvl {p.level}</span>
+                                <span className="bg-red-800 px-3 py-1 rounded-full">⚔️ {getCombatStrength(p)} Güç</span>
+                            </div>
+                            <PlayerInventory player={p} />
+                        </div>
+                    ))}
+                </div>
+            </div>
+
+            {/* Bottom Bar */}
+            <div className="bg-slate-800/95 border-t-4 border-slate-700 p-6 backdrop-blur-xl z-30">
+                <div className="flex justify-between items-center mb-6">
+                    <div>
+                        <div className="flex items-center gap-4 mb-2">
+                            <h2 className="text-3xl font-black uppercase">{myPlayer?.name}</h2>
+                            <div className="flex items-center gap-2">
+                                <span className="text-xs font-black bg-amber-500 text-slate-900 px-4 py-1.5 rounded-full">LVL {myPlayer?.level}</span>
+                                <span className="text-xs font-black bg-blue-600 px-4 py-1.5 rounded-full">⚔️ {myPower} GÜÇ</span>
+                                <span className="text-xs font-black bg-yellow-600 text-slate-950 px-4 py-1.5 rounded-full tracking-widest">🪙 {myPlayer?.gold || 0} ALTIN</span>
+                            </div>
+                        </div>
+                        <PlayerInventory player={myPlayer} />
+                    </div>
+                    {myTurn && <button onClick={() => socket.emit('endTurn', currentRoom.id)}
+                        className="bg-blue-600 hover:bg-blue-500 text-white font-black py-4 px-12 rounded-2xl shadow-[0_4px_0_0_#1e3a8a] transition-all uppercase tracking-widest text-sm">Turu Bitir</button>}
+                </div>
+                <div className="flex gap-4 overflow-x-auto py-4">
+                    {myPlayer?.hand.map((card: any, idx: number) => (
+                        <div key={`${card.id}-${idx}`} draggable={true} onDragStart={(e) => onDragStart(e, card)} className="transition-transform hover:-translate-y-4">
+                            <Card card={card} isPlayable={myTurn || currentRoom.phase === 'combat'} onClick={() => playCard(card.id)} onDiscard={() => { if (confirm(`${card.name} kartını atmak istiyor musunuz?`)) socket.emit('discardCard', { roomId: currentRoom.id, cardId: card.id }); }} />
+                        </div>
+                    ))}
+                </div>
             </div>
         </div>
-        {myTurn && (
-            <button
-                onClick={() => socket.emit('endTurn', currentRoom.id)}
-                className="bg-blue-600 hover:bg-blue-500 text-white font-black py-2 px-8 rounded-xl shadow-lg border-b-4 border-blue-950 active:border-b-0 active:translate-y-1 transition-all uppercase tracking-widest text-sm"
-            >
-                Turu Bitir
-            </button>
-        )}
-    </div>
-
-    {/* MY HAND */}
-    <div className="flex gap-4 overflow-x-auto pb-4 px-2 custom-scrollbar">
-        {myPlayer?.hand.map((card: any, idx: number) => (
-            <div
-                key={`${card.id}-${idx}`}
-                className="flex-shrink-0"
-                draggable={myTurn}
-                onDragStart={(e) => onDragStart(e, card)}
-            >
-                <Card
-                    card={card}
-                    isPlayable={myTurn}
-                    onClick={() => socket.emit('playCard', { roomId: currentRoom.id, cardId: card.id })}
-                    onDiscard={() => {
-                        if (confirm(`${card.name} kartını atmak (satmak) istiyor musunuz?`)) {
-                            socket.emit('discardCard', { roomId: currentRoom.id, cardId: card.id });
-                        }
-                    }}
-                />
-            </div>
-        ))}
-    </div>
-</div>
-        </div >
     );
 };
 

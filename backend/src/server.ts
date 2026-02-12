@@ -298,7 +298,10 @@ io.on("connection", (socket: Socket) => {
             }
 
             if (room.currentCombat && room.currentCombat.status === 'active') {
-                if (room.currentCombat.timer !== undefined) room.currentCombat.timer += 2;
+                if (room.currentCombat.timer !== undefined) {
+                    room.currentCombat.timer += 5;
+                    io.to(roomId).emit("notification", `${player.name} bir kart oynadı! Savaş süresi 5 saniye uzadı.`);
+                }
             }
             emitRoomUpdate(roomId);
         }
@@ -624,7 +627,10 @@ io.on("connection", (socket: Socket) => {
             }
 
             if (room.currentCombat && room.currentCombat.status === 'active') {
-                if (room.currentCombat.timer !== undefined) room.currentCombat.timer += 2;
+                if (room.currentCombat.timer !== undefined) {
+                    room.currentCombat.timer += 5;
+                    io.to(roomId).emit("notification", `${player.name} bir kart oynadı! Savaş süresi 5 saniye uzadı.`);
+                }
             }
             emitRoomUpdate(roomId);
         }

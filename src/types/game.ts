@@ -51,5 +51,9 @@ export interface BlessingCard extends Card {
     effect: string;
 }
 
+export interface DeckConfiguration {
+    [cardId: string]: number; // Maps base card ID to quantity
+}
+
 // Union type for easier usage
 export type GameCard = MonsterCard | ItemCard | CurseCard | ClassCard | RaceCard | BlessingCard | GenericCard;

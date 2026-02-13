@@ -1,6 +1,10 @@
 export type CardType = 'door' | 'treasure';
 export type SubType = 'monster' | 'curse' | 'race' | 'class' | 'item' | 'modifier' | 'blessing' | 'fightspells' | 'other';
 
+export interface DeckConfiguration {
+    [cardId: string]: number; // Maps base card ID to quantity
+}
+
 export interface Card {
     id: string;
     name: string;
@@ -116,7 +120,7 @@ export const DOOR_DECK: GameCard[] = [
         name: 'Esnaf',
         type: 'door',
         subType: 'class',
-        description: 'Satış yeteneği: Eşyaları 100 altın fazla fiyata satabilirsin.',
+        description: 'Satış yeteneği: Turundaki ilk sattığın eşyayı 2 katı fiyatına satarsın.',
         abilities: ['pazarlik'],
     } as any,
     {
@@ -201,38 +205,6 @@ export const TREASURE_DECK: GameCard[] = [
     } as any,
     {
         id: 'fs_mahalleabisi_1',
-        name: 'Mahalle Abisi (Savaş Büyüsü)',
-        type: 'treasure',
-        subType: 'fightspells',
-        description: '50 kuruş için ölür. Seçtiğin taraf +5 güç kazanır.',
-        bonus: 5,
-    } as any,
-    {
-        id: 'fs_mahalleabisi_2',
-        name: 'Mahalle Abisi (Savaş Büyüsü)',
-        type: 'treasure',
-        subType: 'fightspells',
-        description: '50 kuruş için ölür. Seçtiğin taraf +5 güç kazanır.',
-        bonus: 5,
-    } as any,
-    {
-        id: 'fs_mahalleabisi_3',
-        name: 'Mahalle Abisi (Savaş Büyüsü)',
-        type: 'treasure',
-        subType: 'fightspells',
-        description: '50 kuruş için ölür. Seçtiğin taraf +5 güç kazanır.',
-        bonus: 5,
-    } as any,
-    {
-        id: 'fs_mahalleabisi_4',
-        name: 'Mahalle Abisi (Savaş Büyüsü)',
-        type: 'treasure',
-        subType: 'fightspells',
-        description: '50 kuruş için ölür. Seçtiğin taraf +5 güç kazanır.',
-        bonus: 5,
-    } as any,
-    {
-        id: 'fs_mahalleabisi_5',
         name: 'Mahalle Abisi (Savaş Büyüsü)',
         type: 'treasure',
         subType: 'fightspells',

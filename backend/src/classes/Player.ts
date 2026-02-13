@@ -9,12 +9,14 @@ export class Player {
     public backpack: any[]; // Cards that cannot be equipped (private to player)
     public inCombat: boolean;
     public gold: number;
+    public itemsSoldThisTurn: number; // For Esnaf class ability
 
     constructor(id: string, name: string) {
         this.id = id;
         this.name = name;
         this.level = 1;
         this.gold = 0;
+        this.itemsSoldThisTurn = 0;
         this.hand = [];
         this.equipment = [];
         this.backpack = [];

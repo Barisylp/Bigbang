@@ -4,18 +4,19 @@ import { Server, Socket } from "socket.io";
 import { Player } from "./classes/Player";
 import path from "path";
 import cors from "cors";
-import { DOOR_DECK, TREASURE_DECK, GameCard } from "./data/cards";
+import { DOOR_DECK, TREASURE_DECK, GameCard, DeckConfiguration } from "./data/cards";
 
 function generateRoomId(): string {
     return Math.random().toString(36).substring(2, 6).toUpperCase();
 }
 
-function initializeDoorDeck(): GameCard[] {
-    // 2Copies of each card
+function initializeDoorDeck(deckConfig?: DeckConfiguration): GameCard[] {
     let deck: GameCard[] = [];
     DOOR_DECK.forEach(card => {
-        deck.push({ ...card, id: card.id + "_1" }); // Unique ID for copies
-        deck.push({ ...card, id: card.id + "_2" });
+        const quantity = deckConfig && deckConfig[card.id] !== undefined ? deckConfig[card.id] : 2;
+        for (let i = 0; i < quantity; i++) {
+            deck.push({ ...card, id: card.id + "_" + (i + 1) });
+        }
     });
 
     // Shuffle (Fisher-Yates)
@@ -27,12 +28,13 @@ function initializeDoorDeck(): GameCard[] {
     return deck;
 }
 
-function initializeTreasureDeck(): GameCard[] {
-    // 2Copies of each card
+function initializeTreasureDeck(deckConfig?: DeckConfiguration): GameCard[] {
     let deck: GameCard[] = [];
     TREASURE_DECK.forEach(card => {
-        deck.push({ ...card, id: card.id + "_1" }); // Unique ID for copies
-        deck.push({ ...card, id: card.id + "_2" });
+        const quantity = deckConfig && deckConfig[card.id] !== undefined ? deckConfig[card.id] : 2;
+        for (let i = 0; i < quantity; i++) {
+            deck.push({ ...card, id: card.id + "_" + (i + 1) });
+        }
     });
 
     // Shuffle (Fisher-Yates)
@@ -54,6 +56,8 @@ interface Room {
     doorDeck: any[]; // GameCard[]
 
     treasureDeck: any[]; // GameCard[]
+    turnPhase: 'kick_open' | 'action_selection' | 'end';
+    deckConfiguration?: DeckConfiguration;
     currentCombat?: {
         monster: any; // MonsterCard
         playerId: string;
@@ -148,7 +152,7 @@ function handleResolveCombat(roomId: string) {
         const earnedTreasures = [];
         for (let i = 0; i < treasureCount; i++) {
             if (!room.treasureDeck || room.treasureDeck.length === 0) {
-                room.treasureDeck = initializeTreasureDeck();
+                room.treasureDeck = initializeTreasureDeck(room.deckConfiguration);
             }
             const tCard = room.treasureDeck.pop();
             if (tCard) {
@@ -189,7 +193,8 @@ io.on("connection", (socket: Socket) => {
             currentTurn: 0,
             discardPile: [],
             doorDeck: initializeDoorDeck(),
-            treasureDeck: initializeTreasureDeck()
+            treasureDeck: initializeTreasureDeck(),
+            turnPhase: 'kick_open'
         };
         rooms[roomId] = room;
         socket.join(roomId);
@@ -213,22 +218,34 @@ io.on("connection", (socket: Socket) => {
         emitRoomUpdate(roomId);
     });
 
+    socket.on("updateDeckConfig", ({ roomId, deckConfig }: { roomId: string; deckConfig: DeckConfiguration }) => {
+        const room = rooms[roomId];
+        if (!room || socket.id !== room.hostId) return;
+
+        room.deckConfiguration = deckConfig;
+        console.log("Deck configuration updated for room", roomId);
+        emitRoomUpdate(roomId);
+    });
+
     socket.on("startGame", (roomId: string) => {
         const room = rooms[roomId];
         if (!room || socket.id !== room.hostId) return;
 
         console.log("Starting game for room", roomId);
 
-        // Decks are already initialized in createRoom
+        // Re-initialize decks with custom configuration
+        room.doorDeck = initializeDoorDeck(room.deckConfiguration);
+        room.treasureDeck = initializeTreasureDeck(room.deckConfiguration);
+
         room.players.forEach(player => {
             player.hand = [];
             // Deal 4 Door and 4 Treasure
             for (let i = 0; i < 4; i++) {
-                if (room.doorDeck.length === 0) room.doorDeck = initializeDoorDeck();
+                if (room.doorDeck.length === 0) room.doorDeck = initializeDoorDeck(room.deckConfiguration);
                 const dCard = room.doorDeck.pop();
                 if (dCard) player.hand.push(dCard);
 
-                if (room.treasureDeck.length === 0) room.treasureDeck = initializeTreasureDeck();
+                if (room.treasureDeck.length === 0) room.treasureDeck = initializeTreasureDeck(room.deckConfiguration);
                 const tCard = room.treasureDeck.pop();
                 if (tCard) player.hand.push(tCard);
             }
@@ -243,7 +260,18 @@ io.on("connection", (socket: Socket) => {
     socket.on("endTurn", (roomId: string) => {
         const room = rooms[roomId];
         if (!room) return;
+
+        // Reset turn-based counters for current player
+        const currentPlayer = room.players[room.currentTurn];
+        if (currentPlayer) {
+            currentPlayer.itemsSoldThisTurn = 0;
+        }
+
         room.currentTurn = (room.currentTurn + 1) % room.players.length;
+
+        // Reset Phase for Next Player
+        room.turnPhase = 'kick_open';
+
         emitRoomUpdate(roomId);
     });
 
@@ -337,23 +365,44 @@ io.on("connection", (socket: Socket) => {
         if (cardIndex > -1) {
             const discardedCard = player.hand[cardIndex];
             player.hand.splice(cardIndex, 1);
-            if (discardedCard.goldValue) player.gold += discardedCard.goldValue;
+
+            if (discardedCard.goldValue) {
+                let saleValue = discardedCard.goldValue;
+
+                // ESNAF ABILITY: First item sold in turn gets 2x price
+                // Check if it's player's turn is already implicit as they can usually only play on their turn, 
+                // but let's strictly check if needed. logic: "itemsSoldThisTurn" reset at endTurn.
+                if (player.class?.name === 'Esnaf' && player.itemsSoldThisTurn === 0) {
+                    saleValue *= 2;
+                }
+
+                player.gold += saleValue;
+                player.itemsSoldThisTurn++;
+            }
+
             room.discardPile.push(discardedCard);
             emitRoomUpdate(roomId);
         }
     });
 
-    // 🚪 KAPI KARTI ÇEK
+    // 🚪 KAPI KARTI ÇEK (KICK OPEN THE DOOR)
     socket.on("drawDoorCard", ({ roomId }: { roomId: string }) => {
         const room = rooms[roomId];
         if (!room) return;
         const player = room.players.find(p => p.id === socket.id);
         if (!player) return;
 
-        if (!room.doorDeck || room.doorDeck.length === 0) room.doorDeck = initializeDoorDeck();
+        // Ensure it's the right phase
+        if (room.turnPhase !== 'kick_open') {
+            socket.emit("error", "Şu an kapı çekme evresinde değilsin!");
+            return;
+        }
+
+        if (!room.doorDeck || room.doorDeck.length === 0) room.doorDeck = initializeDoorDeck(room.deckConfiguration);
         const card = room.doorDeck.pop();
         if (card) {
             if (card.subType === 'monster') {
+                // MONSTER FOUND! DIRECTLY TO COMBAT
                 room.currentCombat = {
                     monster: card,
                     playerId: player.id,
@@ -362,6 +411,7 @@ io.on("connection", (socket: Socket) => {
                     playerBonus: 0,
                     monsterBonus: 0
                 };
+                // Timer logic
                 if (room.timerInterval) clearInterval(room.timerInterval);
                 room.timerInterval = setInterval(() => {
                     if (room.currentCombat && room.currentCombat.timer !== undefined) {
@@ -375,8 +425,19 @@ io.on("connection", (socket: Socket) => {
                         }
                     }
                 }, 1000);
+
+                // Combat effectively ends the "Action Selection" possibility for this turn usually, 
+                // or we can set it to 'end' or similar? 
+                // In Munchkin, if you fight a monster on Kick Open, you can't Look for Trouble or Loot.
+                // So we can set phase to 'end' (pending combat resolution) or keep it tracked.
+                // Let's set it to 'end' so they can't do other phase actions.
+                room.turnPhase = 'end';
+
             } else {
+                // NO MONSTER. PUT IN HAND.
                 player.hand.push(card);
+                // ENABLE NEXT PHASE
+                room.turnPhase = 'action_selection';
             }
             emitRoomUpdate(roomId);
         }
@@ -389,10 +450,96 @@ io.on("connection", (socket: Socket) => {
         const player = room.players.find(p => p.id === socket.id);
         if (!player) return;
 
-        if (!room.treasureDeck || room.treasureDeck.length === 0) room.treasureDeck = initializeTreasureDeck();
+        if (!room.treasureDeck || room.treasureDeck.length === 0) room.treasureDeck = initializeTreasureDeck(room.deckConfiguration);
         const card = room.treasureDeck.pop();
         if (card) {
             player.hand.push(card);
+            emitRoomUpdate(roomId);
+        }
+    });
+
+    // 🧛 BELA ARA (LOOK FOR TROUBLE)
+    socket.on("lookForTrouble", ({ roomId, cardId }: { roomId: string; cardId: string }) => {
+        const room = rooms[roomId];
+        if (!room) return;
+        const player = room.players.find(p => p.id === socket.id);
+        if (!player) return;
+
+        if (room.turnPhase !== 'action_selection') return;
+
+        // Find card in hand
+        const cardIndex = player.hand.findIndex(c => c.id === cardId);
+        if (cardIndex === -1) return;
+
+        const card = player.hand[cardIndex];
+        if (card.subType !== 'monster') {
+            socket.emit("error", "Sadece canavar kartı ile bela aranabilir!");
+            return;
+        }
+
+        // Remove from hand and start combat
+        player.hand.splice(cardIndex, 1);
+
+        room.currentCombat = {
+            monster: card,
+            playerId: player.id,
+            status: 'active',
+            timer: 7,
+            playerBonus: 0,
+            monsterBonus: 0
+        };
+
+        // Timer logic
+        if (room.timerInterval) clearInterval(room.timerInterval);
+        room.timerInterval = setInterval(() => {
+            if (room.currentCombat && room.currentCombat.timer !== undefined) {
+                room.currentCombat.timer--;
+                if (room.currentCombat.timer <= 0) {
+                    if (room.timerInterval) clearInterval(room.timerInterval);
+                    room.timerInterval = null;
+                    handleResolveCombat(roomId);
+                } else {
+                    emitRoomUpdate(roomId);
+                }
+            }
+        }, 1000);
+
+        room.turnPhase = 'end'; // Action taken
+        emitRoomUpdate(roomId);
+    });
+
+    // 🕵️ KAPIYI YAĞMALA (LOOT THE ROOM)
+    socket.on("lootTheRoom", ({ roomId }: { roomId: string }) => {
+        const room = rooms[roomId];
+        if (!room) return;
+        const player = room.players.find(p => p.id === socket.id);
+        if (!player) return;
+
+        if (room.turnPhase !== 'action_selection') return;
+
+        if (!room.doorDeck || room.doorDeck.length === 0) room.doorDeck = initializeDoorDeck(room.deckConfiguration);
+        const card = room.doorDeck.pop();
+        if (card) {
+            // Draw Face Down (Visible to player, but logically known as "face down draw" in Munchkin terms, usually means just put in hand without showing others)
+            // Since our emitRoomUpdate masks other players' hands anyway, just pushing to hand is "face down" to others.
+            player.hand.push(card);
+
+            // "alınan kartı diğer oyuncular göremesin" -> Hand masking already handles this.
+
+            // End Turn after looting? PROMPT: "devam ete basıldığı zaman tur sonraki oyuncuya gitsin"
+            // "kapı yağmalama kartına basıldığı zaman ... devam ete basıldığı zaman"
+            // Suggests Loot executes, THEN they must press Continue?
+            // BUT "oyuncu bu düğmelerden sdc bir tanesine basabilsin" (Only ONE of these buttons)
+            // So if I click Loot, I used my "one button". I shouldn't be able to click Look For Trouble.
+            // But can I click Continue? Yes, to pass the turn. 
+            // OR does Loot automatically end turn?
+            // "Loot... directly to inventory... hidden from others... continue button passes turn"
+            // Let's make Loot change phase to 'end'. User can then click 'Continue' (EndTurn) or we auto-end?
+            // Usually in UI, if I click Loot, I'm done. I can just wait or click standard "End Turn" button.
+            // The prompt says "bir tanede devam et düğmesi ekle... oyuncu bu düğmelerden sdc bir tanesine basabilsin".
+            // Implementation: Loot changes phase to 'end'. Then user manually clicks "End Turn" (the standard one) OR "Devam Et" action button becomes a "End Turn" trigger.
+            // Let's set phase to 'end'. The UI will hide the action buttons.
+            room.turnPhase = 'end';
             emitRoomUpdate(roomId);
         }
     });

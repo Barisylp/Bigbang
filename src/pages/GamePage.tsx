@@ -64,6 +64,7 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
     };
 
     const [showSpellTarget, setShowSpellTarget] = React.useState<any>(null);
+    const [selectingMonsterMode, setSelectingMonsterMode] = React.useState(false);
 
     const playFightSpell = (cardId: string, target: 'player' | 'monster') => {
         socket.emit('playFightSpell', { roomId: currentRoom.id, cardId, target });
@@ -308,13 +309,17 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
                     <div
                         onClick={() => {
                             if (myTurn) {
-                                socket.emit('drawDoorCard', { roomId: currentRoom.id });
+                                if (currentRoom.turnPhase === 'kick_open') {
+                                    socket.emit('drawDoorCard', { roomId: currentRoom.id });
+                                } else {
+                                    alert("Kapı açma evresini geçtiniz! Şimdi 'Bela Ara', 'Yağmala' veya 'Devam Et' seçmelisiniz.");
+                                }
                             } else {
                                 alert("Sadece kendi turunda kart çekebilirsin!");
                             }
                         }}
                         className={`w-32 h-44 bg-slate-900 border-4 border-slate-700 rounded-xl flex flex-col items-center justify-center cursor-pointer hover:border-amber-600 transition-colors shadow-xl group relative select-none
-                        ${!myTurn ? 'opacity-70 cursor-not-allowed' : ''}`}
+                        ${!myTurn || currentRoom.turnPhase !== 'kick_open' ? 'opacity-70 cursor-not-allowed' : ''}`}
                     >
                         <div className="absolute inset-2 border-2 border-dashed border-slate-600 rounded opacity-50"></div>
                         <div className="z-10 text-center">
@@ -365,6 +370,37 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
                         </div>
                     </div>
                 </div>
+
+                {/* ACTION SELECTION BUTTONS (CENTRAL) */}
+                {myTurn && currentRoom.turnPhase === 'action_selection' && (
+                    <div className="absolute top-[65%] left-1/2 transform -translate-x-1/2 mt-8 flex flex-col items-center gap-2 z-20 bg-slate-900/90 p-4 rounded-xl border border-amber-500/50 shadow-2xl backdrop-blur-sm">
+                        <div className="text-amber-500 font-bold text-sm mb-1 uppercase tracking-widest">Ne Yapacaksın?</div>
+                        <div className="flex gap-4">
+                            <button
+                                onClick={() => setSelectingMonsterMode(!selectingMonsterMode)}
+                                className={`px-6 py-3 rounded-lg font-black text-lg transition-all transform hover:scale-105 active:scale-95 shadow-lg border-b-4 
+                                ${selectingMonsterMode ? 'bg-red-600 border-red-800 animate-pulse ring-4 ring-red-500/30' : 'bg-gradient-to-b from-red-700 to-red-900 border-red-950 text-red-100 hover:from-red-600 hover:to-red-800'}`}
+                            >
+                                {selectingMonsterMode ? 'KART SEÇ...' : '💀 BELA ARA'}
+                            </button>
+                            <button
+                                onClick={() => socket.emit('lootTheRoom', { roomId: currentRoom.id })}
+                                className="px-6 py-3 rounded-lg font-black text-lg bg-gradient-to-b from-amber-600 to-amber-800 border-b-4 border-amber-950 text-amber-100 hover:from-amber-500 hover:to-amber-700 transition-all transform hover:scale-105 active:scale-95 shadow-lg"
+                            >
+                                🕵️ YAĞMALA
+                            </button>
+                            <button
+                                onClick={() => socket.emit('endTurn', currentRoom.id)}
+                                className="px-6 py-3 rounded-lg font-black text-lg bg-gradient-to-b from-blue-600 to-blue-800 border-b-4 border-blue-950 text-blue-100 hover:from-blue-500 hover:to-blue-700 transition-all transform hover:scale-105 active:scale-95 shadow-lg"
+                            >
+                                ⏩ DEVAM ET
+                            </button>
+                        </div>
+                        <div className="text-[10px] text-slate-400 max-w-md text-center">
+                            Canavarın yoksa yağmala, varsa bela ara. Hiçbiri yoksa devam et.
+                        </div>
+                    </div>
+                )}
 
                 {/* OTHER PLAYERS */}
                 {currentRoom.players.filter((p: any) => p.id !== socket.id).map((p: any) => (
@@ -429,19 +465,28 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
                                 <span className="text-[10px] font-mono">1000 G</span>
                             </button>
 
+                            {/* END TURN BUTTON / ACTION BUTTONS */}
                             {/* END TURN BUTTON */}
-                            <button
-                                onClick={() => {
-                                    if (myPlayer.hand.length > 5) {
-                                        alert(`Elinizde ${myPlayer.hand.length} kart var! Turu bitirmek için en fazla 5 kartınız olmalı. Fazlalıkları atmak için kartların üzerindeki çarpı işaretini kullanın.`);
-                                        return;
-                                    }
-                                    socket.emit('endTurn', currentRoom.id);
-                                }}
-                                className={`${myPlayer.hand.length > 5 ? 'bg-red-600 hover:bg-red-500 animate-pulse' : 'bg-blue-600 hover:bg-blue-500'} text-white font-bold py-2 px-6 rounded-lg shadow-lg border-b-4 ${myPlayer.hand.length > 5 ? 'border-red-800' : 'border-blue-800'} active:border-b-0 active:translate-y-1 transition-all`}
-                            >
-                                {myPlayer.hand.length > 5 ? `Fazla Kart Var (${myPlayer.hand.length}/5)` : 'Turu Bitir'}
-                            </button>
+                            {currentRoom.turnPhase !== 'action_selection' && (
+                                <button
+                                    onClick={() => {
+                                        if (currentRoom.turnPhase === 'kick_open') {
+                                            alert("Önce kapı açmalısın!");
+                                            return;
+                                        }
+                                        if (myPlayer.hand.length > 5) {
+                                            alert(`Elinizde ${myPlayer.hand.length} kart var! Turu bitirmek için en fazla 5 kartınız olmalı. Fazlalıkları atmak için kartların üzerindeki çarpı işaretini kullanın.`);
+                                            return;
+                                        }
+                                        socket.emit('endTurn', currentRoom.id);
+                                    }}
+                                    disabled={currentRoom.turnPhase === 'kick_open'}
+                                    className={`${myPlayer.hand.length > 5 ? 'bg-red-600 hover:bg-red-500 animate-pulse' : 'bg-blue-600 hover:bg-blue-500'} text-white font-bold py-2 px-6 rounded-lg shadow-lg border-b-4 ${myPlayer.hand.length > 5 ? 'border-red-800' : 'border-blue-800'} active:border-b-0 active:translate-y-1 transition-all
+                                    ${currentRoom.turnPhase === 'kick_open' ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                >
+                                    {myPlayer.hand.length > 5 ? `Fazla Kart Var (${myPlayer.hand.length}/5)` : 'Turu Bitir'}
+                                </button>
+                            )}
                         </div>
                     )}
                 </div>
@@ -459,6 +504,16 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
                                 card={card}
                                 isPlayable={myTurn}
                                 onClick={() => {
+                                    if (selectingMonsterMode) {
+                                        if (card.subType === 'monster') {
+                                            socket.emit('lookForTrouble', { roomId: currentRoom.id, cardId: card.id });
+                                            setSelectingMonsterMode(false);
+                                        } else {
+                                            alert("Bela aramak için bir CANAVAR kartı seçmelisiniz!");
+                                        }
+                                        return;
+                                    }
+
                                     if (card.subType === 'fightspells') {
                                         if (currentRoom.currentCombat?.status === 'active') {
                                             setShowSpellTarget(card);

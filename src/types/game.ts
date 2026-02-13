@@ -46,6 +46,11 @@ export interface GenericCard extends Card {
     subType: 'modifier' | 'other';
 }
 
+export interface FightSpellCard extends Card {
+    subType: 'fightspells';
+    bonus: number;
+}
+
 export interface BlessingCard extends Card {
     subType: 'blessing';
     effect: string;
@@ -56,4 +61,4 @@ export interface DeckConfiguration {
 }
 
 // Union type for easier usage
-export type GameCard = MonsterCard | ItemCard | CurseCard | ClassCard | RaceCard | BlessingCard | GenericCard;
+export type GameCard = MonsterCard | ItemCard | CurseCard | ClassCard | RaceCard | BlessingCard | FightSpellCard | GenericCard;

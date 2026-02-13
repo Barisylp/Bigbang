@@ -99,6 +99,7 @@ function emitRoomUpdate(roomId: string) {
             }
             return {
                 ...player,
+                hand: player.hand.map(() => ({ hidden: true })), // Mask hand
                 backpack: player.backpack.map(() => ({ hidden: true })) // Mask contents but keep count
             };
         });
@@ -337,7 +338,7 @@ io.on("connection", (socket: Socket) => {
     });
 
     // 🪄 SAVAŞ BÜYÜSÜ OYNA
-    socket.on("playFightSpell", ({ roomId, cardId, target }: { roomId: string; cardId: string; target: 'player' | 'monster' }) => {
+    socket.on("playFightSpell", ({ roomId, cardId, target, auxiliaryCardId }: { roomId: string; cardId: string; target: 'player' | 'monster', auxiliaryCardId?: string }) => {
         const room = rooms[roomId];
         if (!room || !room.currentCombat || room.currentCombat.status !== 'active') return;
         const player = room.players.find(p => p.id === socket.id);
@@ -356,6 +357,66 @@ io.on("connection", (socket: Socket) => {
 
             if (fromHand) player.hand.splice(cardIndex, 1);
             else player.backpack.splice(cardIndex, 1);
+
+            // SPECIAL CARD: ARA BULUCU
+            if (card.id.startsWith('fs_arabulucu')) {
+                if (target !== 'player') {
+                    socket.emit("error", "Ara Bulucu sadece oyuncuya (savaşçıya) kullanılabilir!");
+                    return;
+                }
+                const combatant = room.players.find(p => p.id === room.currentCombat!.playerId);
+                if (combatant) {
+                    const oldLevel = combatant.level;
+                    combatant.level = Math.max(1, combatant.level - 1);
+
+                    // Clear timer
+                    if (room.timerInterval) {
+                        clearInterval(room.timerInterval);
+                        room.timerInterval = null;
+                    }
+
+                    io.to(roomId).emit("notification", `${player.name} Ara Bulucu oynadı! Barış sağlandı ama ${combatant.name} 1 seviye kaybetti (${oldLevel} -> ${combatant.level}). Hazine kazanılmadı.`);
+                    io.to(roomId).emit("combatResolved", { result: 'win', player: combatant }); // Still marked as 'win' for UI purposes but no rewards
+
+                    room.currentCombat = undefined;
+                    emitRoomUpdate(roomId);
+                    return;
+                }
+            }
+
+            // SPECIAL CARD: OLM BAK GİT
+            if (card.id.startsWith('fs_olmbakgit')) {
+                if (!auxiliaryCardId) {
+                    socket.emit("error", "Olm Bak Git için bir canavar seçmelisiniz!");
+                    return;
+                }
+                const monsterIndex = player.hand.findIndex(c => c.id === auxiliaryCardId);
+                if (monsterIndex === -1) {
+                    socket.emit("error", "Seçilen canavar elinizde değil!");
+                    return;
+                }
+                const selectedMonster = player.hand[monsterIndex];
+                if (selectedMonster.subType !== 'monster') {
+                    socket.emit("error", "Sadece canavar kartı seçebilirsiniz!");
+                    return;
+                }
+
+                // Discard selected monster
+                player.hand.splice(monsterIndex, 1);
+                room.discardPile.push(selectedMonster);
+
+                const monsterPower = selectedMonster.level || 0;
+                if (target === 'player') room.currentCombat.playerBonus = (room.currentCombat.playerBonus || 0) + monsterPower;
+                else room.currentCombat.monsterBonus = (room.currentCombat.monsterBonus || 0) + monsterPower;
+
+                if (room.currentCombat.timer !== undefined) {
+                    room.currentCombat.timer += 5;
+                }
+
+                io.to(roomId).emit("notification", `${player.name} Olm Bak Git oynadı! ${selectedMonster.name} canavarını (${monsterPower} Güç) ${target === 'player' ? 'Savaşçı' : 'Canavar'} tarafına dahil etti!`);
+                emitRoomUpdate(roomId);
+                return;
+            }
 
             const bonus = card.bonus || 0;
             if (target === 'player') room.currentCombat.playerBonus = (room.currentCombat.playerBonus || 0) + bonus;
@@ -456,20 +517,20 @@ io.on("connection", (socket: Socket) => {
 
             } else if (card.subType === 'curse') {
                 // CURSE FOUND! APPLY IMMEDIATELY
-                if (card.id === 'c_cigkofte') {
+                if (card.id.startsWith('c_cigkofte')) {
                     // Duration: 3 turns
                     player.activeModifiers.push({ source: card.name, value: -3, duration: 3 });
                     room.players.forEach(p => {
                         const socket = io.sockets.sockets.get(p.id);
                         if (socket) socket.emit("toast", { message: `${player.name} lanetlendi! (${card.name}) Güç -3 (3 Tur).`, type: "warning" });
                     });
-                } else if (card.id === 'c1') {
-                    // Nazar Çıktı - Immediate on drawer
+                } else if (card.id.startsWith('c1')) {
+                    // Nazar Çıktı - Broadened to ANY card in hand, equipment, or backpack
                     let candidateItems: { source: 'hand' | 'equipment' | 'backpack', index: number, card: any }[] = [];
 
-                    player.hand.forEach((c, idx) => { if (c.subType === 'item') candidateItems.push({ source: 'hand', index: idx, card: c }); });
+                    player.hand.forEach((c, idx) => { candidateItems.push({ source: 'hand', index: idx, card: c }); });
                     player.equipment.forEach((c, idx) => { candidateItems.push({ source: 'equipment', index: idx, card: c }); });
-                    player.backpack.forEach((c, idx) => { if (c.subType === 'item') candidateItems.push({ source: 'backpack', index: idx, card: c }); });
+                    player.backpack.forEach((c, idx) => { candidateItems.push({ source: 'backpack', index: idx, card: c }); });
 
                     if (candidateItems.length > 0) {
                         const randomIndex = Math.floor(Math.random() * candidateItems.length);
@@ -488,7 +549,7 @@ io.on("connection", (socket: Socket) => {
                     } else {
                         room.players.forEach(p => {
                             const socket = io.sockets.sockets.get(p.id);
-                            if (socket) socket.emit("toast", { message: `${player.name} lanetlendi ama eşyası yok!`, type: "info" });
+                            if (socket) socket.emit("toast", { message: `${player.name} lanetlendi ama hiçbir kartı yok!`, type: "info" });
                         });
                     }
                 }
@@ -514,17 +575,7 @@ io.on("connection", (socket: Socket) => {
 
     // 💰 HAZİNE KARTI ÇEK
     socket.on("drawTreasureCard", ({ roomId }: { roomId: string }) => {
-        const room = rooms[roomId];
-        if (!room) return;
-        const player = room.players.find(p => p.id === socket.id);
-        if (!player) return;
-
-        if (!room.treasureDeck || room.treasureDeck.length === 0) room.treasureDeck = initializeTreasureDeck(room.deckConfiguration);
-        const card = room.treasureDeck.pop();
-        if (card) {
-            player.hand.push(card);
-            emitRoomUpdate(roomId);
-        }
+        socket.emit("error", "Hazine kartları sadece canavarı yenince otomatik olarak verilir. Buradan çekemezsin!");
     });
 
     // 🧛 BELA ARA (LOOK FOR TROUBLE)
@@ -646,7 +697,7 @@ io.on("connection", (socket: Socket) => {
         if (!targetPlayer) return;
 
         // Apply Effect
-        if (card.id === 'c_cigkofte') {
+        if (card.id.startsWith('c_cigkofte')) {
 
             targetPlayer.activeModifiers.push({ source: card.name, value: -3, duration: 3 });
             // Notify
@@ -654,13 +705,13 @@ io.on("connection", (socket: Socket) => {
                 const socket = io.sockets.sockets.get(p.id);
                 if (socket) socket.emit("toast", { message: `${player.name}, ${targetPlayer.name} üzerine ${card.name} oynadı! Güç -3.`, type: "warning" });
             });
-        } else if (card.id === 'c1') {
-            // Nazar Çıktı: Discard random item from Hand, Equipment, or Backpack
+        } else if (card.id.startsWith('c1')) {
+            // Nazar Çıktı: Discard ANY random card from Hand, Equipment, or Backpack
             let candidateItems: { source: 'hand' | 'equipment' | 'backpack', index: number, card: any }[] = [];
 
             // Check Hand
             targetPlayer.hand.forEach((c, idx) => {
-                if (c.subType === 'item') candidateItems.push({ source: 'hand', index: idx, card: c });
+                candidateItems.push({ source: 'hand', index: idx, card: c });
             });
             // Check Equipment
             targetPlayer.equipment.forEach((c, idx) => {
@@ -668,7 +719,7 @@ io.on("connection", (socket: Socket) => {
             });
             // Check Backpack
             targetPlayer.backpack.forEach((c, idx) => {
-                if (c.subType === 'item') candidateItems.push({ source: 'backpack', index: idx, card: c });
+                candidateItems.push({ source: 'backpack', index: idx, card: c });
             });
 
             if (candidateItems.length > 0) {
@@ -688,13 +739,22 @@ io.on("connection", (socket: Socket) => {
                     if (socket) socket.emit("toast", { message: `${player.name}, ${targetPlayer.name} üzerine ${card.name} oynadı! ${selected.card.name} yok oldu!`, type: "error" });
                 });
             } else {
-                socket.emit("toast", { message: `${targetPlayer.name}'in yok edilecek eşyası yok!`, type: "info" });
+                socket.emit("toast", { message: `${targetPlayer.name}'in yok edilecek kartı yok!`, type: "info" });
             }
         }
 
         // Discard
         player.hand.splice(cardIndex, 1);
         room.discardPile.push(card);
+
+        // COMBAT INTERVENTION: Extend timer if someone plays a curse during combat
+        if (room.currentCombat && room.currentCombat.status === 'active') {
+            if (room.currentCombat.timer !== undefined) {
+                room.currentCombat.timer += 5;
+                io.to(roomId).emit("notification", `${player.name} bir lanet oynayarak savaşa müdahale etti! Savaş süresi 5 saniye uzadı.`);
+            }
+        }
+
         emitRoomUpdate(roomId);
     });
 

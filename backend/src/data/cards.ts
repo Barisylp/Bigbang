@@ -151,6 +151,22 @@ export const DOOR_DECK: GameCard[] = [
         badStuff: '1 Seviye Kaybedersin.',
         badStuffEffect: null,
     } as any,
+    {
+        id: 'fs_arabulucu',
+        name: 'Ara Bulucu',
+        type: 'door',
+        subType: 'fightspells',
+        description: 'Savaşçıya huzur verir. Savaşı anında bitirir. Kazanırsın ama 1 Seviye KAYBEDERSİN ve hiç hazine kazanamazsın. (Sadece Savaşçıya Kullanılır)',
+        bonus: 9999, // Special marker for instant win
+    } as any,
+    {
+        id: 'fs_olmbakgit',
+        name: 'Olm Bak Git',
+        type: 'door',
+        subType: 'fightspells',
+        description: 'Elinizdeki bir canavarı herhangi bir savaşa istediğiniz tarafta dahil edersiniz. Canavarın gücü o tarafa eklenir.',
+        bonus: 0, // Bonus depends on selected monster
+    } as any,
 ];
 
 export const TREASURE_DECK: GameCard[] = [

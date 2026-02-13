@@ -68,6 +68,7 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
 
     const [showSpellTarget, setShowSpellTarget] = React.useState<any>(null);
     const [selectingMonsterMode, setSelectingMonsterMode] = React.useState(false);
+    const [selectingOlmBakGitMonster, setSelectingOlmBakGitMonster] = React.useState<{ spellCard: any } | null>(null);
     const [shownCard, setShownCard] = React.useState<any>(null);
 
     React.useEffect(() => {
@@ -81,25 +82,6 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
             socket.off('showCard');
         };
     }, []);
-
-    const playFightSpell = (cardId: string, targetId: string, type: 'player' | 'monster') => {
-        if (showSpellTarget.subType === 'curse') {
-            socket.emit('playCurse', { roomId: currentRoom.id, cardId, targetId });
-        } else {
-            socket.emit('playFightSpell', { roomId: currentRoom.id, cardId, target: type }); // legacy 'target' arg was 'player'|'monster' string literal? 
-            // Previous code: `playFightSpell(cardId, target)` where target was 'player' | 'monster'.
-            // Backend `playFightSpell` expects `target: 'player' | 'monster'`.
-            // But wait, backend `playFightSpell` might need to know WHICH player if there are multiple?
-            // "Seçtiğin taraf +5 güç kazanır" -> usually Side.
-            // "targetPlayerId"?
-            // Existing backend `playFightSpell` (I haven't seen it fully but inferred).
-            // Let's assume existing `playFightSpell` just takes "player" (me/combatant) or "monster".
-            // If I reuse `showSpellTarget`, I need to know what to emit.
-
-            // Let's keep `playFightSpell` as is for now and add `playCurseTarget`.
-        }
-        setShowSpellTarget(null);
-    };
 
     const playCurseTarget = (cardId: string, targetId: string) => {
         socket.emit('playCurse', { roomId: currentRoom.id, cardId, targetId });
@@ -275,7 +257,123 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
                     </div>
                 )}
 
-                {/* CENTER DECKS (Absolute Positioned) */}
+                {/* TARGET SELECTION OVERLAY */}
+                {showSpellTarget && (
+                    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+                        <div className="flex flex-col items-center gap-4 bg-slate-800 p-8 rounded-2xl border-2 border-amber-500 shadow-2xl scale-110">
+                            <div className="text-amber-500 font-bold text-xl mb-2">
+                                {showSpellTarget.subType === 'curse' ? '🎯 Kimi Lanetleyeceksin?' :
+                                    showSpellTarget.id.startsWith('fs_arabulucu') ? '🎯 Barış Sağla (Savaşçıya Yardım Et)' :
+                                        `🎯 Hedef Seç: ${showSpellTarget.name}`}
+                            </div>
+
+                            {showSpellTarget.subType === 'curse' ? (
+                                <div className="flex gap-3 flex-wrap justify-center max-w-md">
+                                    {currentRoom.players.map((p: any) => (
+                                        <button
+                                            key={p.id}
+                                            onClick={() => playCurseTarget(showSpellTarget.id, p.id)}
+                                            className="bg-gradient-to-br from-purple-700 to-purple-900 hover:from-purple-600 hover:to-purple-800 border border-purple-400/50 text-white px-6 py-3 rounded-xl font-bold transition-all transform hover:scale-105 active:scale-95 shadow-lg min-w-[120px]"
+                                        >
+                                            {p.name}
+                                            {p.id === socket.id && " (SENSİN)"}
+                                        </button>
+                                    ))}
+                                </div>
+                            ) : (
+                                <div className="flex gap-6">
+                                    <button
+                                        onClick={() => {
+                                            if (showSpellTarget.id.startsWith('fs_olmbakgit')) {
+                                                // Olm Bak Git logic: need auxiliary card
+                                                socket.emit('playFightSpell', {
+                                                    roomId: currentRoom.id,
+                                                    cardId: showSpellTarget.id,
+                                                    target: 'player',
+                                                    auxiliaryCardId: showSpellTarget.auxMonsterId
+                                                });
+                                            } else {
+                                                socket.emit('playFightSpell', { roomId: currentRoom.id, cardId: showSpellTarget.id, target: 'player' });
+                                            }
+                                            setShowSpellTarget(null);
+                                        }}
+                                        className="bg-gradient-to-b from-blue-500 to-blue-700 hover:from-blue-400 hover:to-blue-600 px-8 py-4 rounded-xl font-bold shadow-xl border-b-4 border-blue-900 active:border-b-0 active:translate-y-1 transition-all text-lg"
+                                    >
+                                        {showSpellTarget.id.startsWith('fs_arabulucu') ? 'BARIŞ SAĞLA' :
+                                            showSpellTarget.id.startsWith('fs_olmbakgit') ? 'SAVAŞÇIYA CANAVAR SAL' :
+                                                `SAVAŞÇIYA (+${showSpellTarget.bonus})`}
+                                    </button>
+
+                                    {!showSpellTarget.id.startsWith('fs_arabulucu') && (
+                                        <button
+                                            onClick={() => {
+                                                if (showSpellTarget.id.startsWith('fs_olmbakgit')) {
+                                                    socket.emit('playFightSpell', {
+                                                        roomId: currentRoom.id,
+                                                        cardId: showSpellTarget.id,
+                                                        target: 'monster',
+                                                        auxiliaryCardId: showSpellTarget.auxMonsterId
+                                                    });
+                                                } else {
+                                                    socket.emit('playFightSpell', { roomId: currentRoom.id, cardId: showSpellTarget.id, target: 'monster' });
+                                                }
+                                                setShowSpellTarget(null);
+                                            }}
+                                            className="bg-gradient-to-b from-red-600 to-red-800 hover:from-red-500 hover:to-red-700 px-8 py-4 rounded-xl font-bold shadow-xl border-b-4 border-red-950 active:border-b-0 active:translate-y-1 transition-all text-lg"
+                                        >
+                                            {showSpellTarget.id.startsWith('fs_olmbakgit') ? 'CANAVARA CANAVAR EKLE' :
+                                                `CANAVARA (+${showSpellTarget.bonus})`}
+                                        </button>
+                                    )}
+                                </div>
+                            )}
+                            <button
+                                onClick={() => setShowSpellTarget(null)}
+                                className="text-sm text-slate-500 mt-4 hover:text-white transition-colors bg-slate-700/50 px-4 py-1 rounded-full border border-slate-600"
+                            >
+                                Vazgeç (İptal)
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* MONSTER SELECTION OVERLAY (For Olm Bak Git) */}
+                {selectingOlmBakGitMonster && (
+                    <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/80 backdrop-blur-md animate-in zoom-in duration-200">
+                        <div className="bg-slate-900 p-8 rounded-3xl border-2 border-green-500 shadow-[0_0_50px_rgba(34,197,94,0.3)] max-w-4xl w-full">
+                            <div className="text-green-500 font-black text-3xl mb-2 text-center">OLM BAK GİT!</div>
+                            <div className="text-slate-300 text-center mb-8">Savaşa dahil etmek istediğin canavarı seç:</div>
+
+                            <div className="flex gap-4 overflow-x-auto pb-6 px-2 justify-center">
+                                {myPlayer.hand.filter((c: any) => c.subType === 'monster').length > 0 ? (
+                                    myPlayer.hand.filter((c: any) => c.subType === 'monster').map((card: any) => (
+                                        <div key={card.id}
+                                            onClick={() => {
+                                                setShowSpellTarget({ ...selectingOlmBakGitMonster.spellCard, auxMonsterId: card.id });
+                                                setSelectingOlmBakGitMonster(null);
+                                            }}
+                                            className="cursor-pointer hover:scale-110 transition-transform active:scale-95"
+                                        >
+                                            <Card card={card} />
+                                            <div className="mt-2 text-center text-green-400 font-bold">Güç: {card.level}</div>
+                                        </div>
+                                    ))
+                                ) : (
+                                    <div className="text-red-400 font-bold text-lg py-12">Elinizde hiç canavar yok!</div>
+                                )}
+                            </div>
+
+                            <div className="flex justify-center mt-4">
+                                <button
+                                    onClick={() => setSelectingOlmBakGitMonster(null)}
+                                    className="px-8 py-2 rounded-full border border-slate-700 text-slate-400 hover:bg-slate-800 hover:text-white transition-all"
+                                >
+                                    Vazgeç (Kapat)
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
                 <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 flex gap-8 items-center z-10">
 
                     {/* COMBAT ARENA OVERLAY */}
@@ -325,7 +423,7 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
                                         onDrop={(e) => {
                                             e.preventDefault();
                                             if (draggedCard && (draggedCard.subType === 'fightspells' || draggedCard.subType === 'modifier')) {
-                                                playFightSpell(draggedCard.id, 'monster');
+                                                socket.emit('playFightSpell', { roomId: currentRoom.id, cardId: draggedCard.id, target: 'monster' });
                                                 setDraggedCard(null);
                                             }
                                         }}
@@ -341,51 +439,12 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
                                     </div>
                                 </div>
 
-
-                                {showSpellTarget && (
-                                    <div className="mt-4 flex flex-col items-center gap-2 bg-slate-800 p-4 rounded-xl border border-amber-500 z-50 shadow-2xl">
-                                        <div className="text-amber-500 font-bold text-sm">
-                                            {showSpellTarget.subType === 'curse' ? 'Kime Lanet Okuyacaksın?' : `Hedef Seç: ${showSpellTarget.name}`}
-                                        </div>
-
-                                        {showSpellTarget.subType === 'curse' ? (
-                                            <div className="flex gap-2 flex-wrap justify-center">
-                                                {currentRoom.players.map((p: any) => (
-                                                    <button
-                                                        key={p.id}
-                                                        onClick={() => playCurseTarget(showSpellTarget.id, p.id)}
-                                                        className="bg-purple-900 hover:bg-purple-700 border border-purple-500 text-purple-200 px-3 py-2 rounded font-bold transition-colors"
-                                                    >
-                                                        {p.name}
-                                                    </button>
-                                                ))}
-                                            </div>
-                                        ) : (
-                                            <div className="flex gap-4">
-                                                <button
-                                                    onClick={() => playFightSpell(showSpellTarget.id, currentRoom.currentCombat.playerId, 'player')}
-                                                    className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded font-bold shadow-lg border-b-4 border-blue-800 active:border-b-0 active:translate-y-1"
-                                                >
-                                                    OYUNCU (+{showSpellTarget.bonus})
-                                                </button>
-                                                <button
-                                                    onClick={() => playFightSpell(showSpellTarget.id, '', 'monster')}
-                                                    className="bg-red-600 hover:bg-red-500 px-4 py-2 rounded font-bold shadow-lg border-b-4 border-red-800 active:border-b-0 active:translate-y-1"
-                                                >
-                                                    CANAVAR (+{showSpellTarget.bonus})
-                                                </button>
-                                            </div>
-                                        )}
-                                        <button onClick={() => setShowSpellTarget(null)} className="text-xs text-slate-400 mt-2 hover:text-white underline">İptal</button>
-                                    </div>
-                                )}
-
                                 {isMe ? (
                                     <div className="flex flex-col items-center gap-4 w-full">
                                         <button
                                             onClick={() => socket.emit('resolveCombat', { roomId: currentRoom.id })}
                                             className={`w-full max-w-md text-white font-black py-4 px-10 rounded-xl shadow-2xl text-2xl transition-all hover:scale-105 active:scale-95 border-b-8
-                                        ${(combatantPower + (currentRoom.currentCombat.playerBonus || 0)) > (currentRoom.currentCombat.monster.level + (currentRoom.currentCombat.monsterBonus || 0))
+                                                    ${(combatantPower + (currentRoom.currentCombat.playerBonus || 0)) > (currentRoom.currentCombat.monster.level + (currentRoom.currentCombat.monsterBonus || 0))
                                                     ? 'bg-gradient-to-r from-green-600 to-green-500 border-green-800 hover:from-green-500 hover:to-green-400 shadow-[0_0_30px_rgba(34,197,94,0.4)]'
                                                     : 'bg-gradient-to-r from-red-800 to-red-600 border-red-950 hover:from-red-700 hover:to-red-500 shadow-[0_0_30px_rgba(220,38,38,0.4)]'}`}
                                         >
@@ -451,15 +510,7 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
 
                     {/* TREASURE DECK */}
                     <div
-                        onClick={() => {
-                            if (myTurn) {
-                                socket.emit('drawTreasureCard', { roomId: currentRoom.id });
-                            } else {
-                                alert("Sadece kendi turunda kart çekebilirsin!");
-                            }
-                        }}
-                        className={`w-32 h-44 bg-slate-900 border-4 border-yellow-700 rounded-xl flex flex-col items-center justify-center cursor-pointer hover:border-yellow-500 transition-colors shadow-xl group relative select-none
-                        ${!myTurn ? 'opacity-70 cursor-not-allowed' : ''}`}
+                        className={`w-32 h-44 bg-slate-900 border-4 border-yellow-700/50 rounded-xl flex flex-col items-center justify-center shadow-xl group relative select-none opacity-80`}
                     >
                         <div className="absolute inset-2 border-2 border-dashed border-yellow-600 rounded opacity-50 bg-yellow-900/10"></div>
                         <div className="z-10 text-center">
@@ -468,7 +519,7 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
                             <div className="text-xs text-slate-400 mt-1">{currentRoom.treasureDeck?.length || 0} Kart</div>
                         </div>
                         <div className="absolute bottom-2 text-[10px] text-yellow-400 opacity-0 group-hover:opacity-100 transition-opacity font-bold">
-                            ÇEKMEK İÇİN TIKLA
+                            OTOMATİK VERİLİR
                         </div>
                     </div>
                 </div>
@@ -635,27 +686,15 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
                                     if (card.subType === 'fightspells' || card.subType === 'curse') {
                                         // Curses can also be played in combat (or usually anytime, but prompt says "same as fight spells... when others in combat")
                                         if (currentRoom.currentCombat?.status === 'active') {
-                                            setShowSpellTarget(card);
+                                            if (card.id.startsWith('fs_olmbakgit')) {
+                                                setSelectingOlmBakGitMonster({ spellCard: card });
+                                            } else {
+                                                setShowSpellTarget(card);
+                                            }
                                         } else {
                                             if (card.subType === 'fightspells') {
                                                 alert("Savaş büyülerini sadece savaş sırasında kullanabilirsin!");
                                             } else {
-                                                // Curses can typically be played anytime, but user said "same as fight spells... when others in combat"
-                                                // "diğer oyuncular savaştayken kullanılabilsin" implies specifically allowing it then.
-                                                // Munchkin rules: Curses can be played at ANY time.
-                                                // But let's follow the user's specific "like fight spells... when others in combat" phrasing to ensure that flow works.
-                                                // If they meant "ALSO when others in combat", I should allow it always.
-                                                // "ve aynı fight spels gibi diğer oyuncular savaştayken kullanılabilsin" -> "AND be usable when others are in combat just like fight spells".
-                                                // This implies "It wasn't usable before, now make it usable there too".
-                                                // Standard Munchkin: Curses are usable anytime.
-                                                // I will allow it `active` combat OR always?
-                                                // Let's allow it always for flexibility, but definitely in combat.
-                                                // Actually, if I just set `setShowSpellTarget(card)`, it opens the UI.
-                                                // If I want to restrict it to combat per user request nuance or just general rule?
-                                                // Let's allow it always, as that's standard, unless user complains.
-                                                // Wait, `setShowSpellTarget` UI for Curse shows "Players". 
-                                                // "Fight Spell" UI shows "Player/Monster".
-                                                // My UI update handles both subtypes.
                                                 setShowSpellTarget(card);
                                             }
                                         }
@@ -673,7 +712,7 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
                     ))}
                 </div>
             </div>
-        </div>
+        </div >
     );
 };
 

@@ -6,16 +6,22 @@ export class Player {
     public race?: any; // RaceCard
     public class?: any; // ClassCard
     public equipment: any[]; // ItemCard[]
+    public backpack: any[]; // Cards that cannot be equipped (private to player)
     public inCombat: boolean;
     public gold: number;
+    public itemsSoldThisTurn: number; // For Esnaf class ability
+    public activeModifiers: { source: string, value: number, duration: number }[];
 
     constructor(id: string, name: string) {
         this.id = id;
         this.name = name;
         this.level = 1;
         this.gold = 0;
+        this.itemsSoldThisTurn = 0;
+        this.activeModifiers = [];
         this.hand = [];
         this.equipment = [];
+        this.backpack = [];
         this.inCombat = false;
     }
 
@@ -32,6 +38,7 @@ export class Player {
         this.equipment.forEach(item => {
             if (item.bonus) strength += item.bonus;
         });
+        this.activeModifiers.forEach(mod => strength += mod.value);
         return strength;
     }
 }

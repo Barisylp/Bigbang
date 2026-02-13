@@ -4,18 +4,19 @@ import { Server, Socket } from "socket.io";
 import { Player } from "./classes/Player";
 import path from "path";
 import cors from "cors";
-import { DOOR_DECK, TREASURE_DECK, GameCard } from "./data/cards";
+import { DOOR_DECK, TREASURE_DECK, GameCard, DeckConfiguration } from "./data/cards";
 
 function generateRoomId(): string {
     return Math.random().toString(36).substring(2, 6).toUpperCase();
 }
 
-function initializeDoorDeck(): GameCard[] {
-    // 2Copies of each card
+function initializeDoorDeck(deckConfig?: DeckConfiguration): GameCard[] {
     let deck: GameCard[] = [];
     DOOR_DECK.forEach(card => {
-        deck.push({ ...card, id: card.id + "_1" }); // Unique ID for copies
-        deck.push({ ...card, id: card.id + "_2" });
+        const quantity = deckConfig && deckConfig[card.id] !== undefined ? deckConfig[card.id] : 2;
+        for (let i = 0; i < quantity; i++) {
+            deck.push({ ...card, id: card.id + "_" + (i + 1) });
+        }
     });
 
     // Shuffle (Fisher-Yates)
@@ -27,12 +28,13 @@ function initializeDoorDeck(): GameCard[] {
     return deck;
 }
 
-function initializeTreasureDeck(): GameCard[] {
-    // 2Copies of each card
+function initializeTreasureDeck(deckConfig?: DeckConfiguration): GameCard[] {
     let deck: GameCard[] = [];
     TREASURE_DECK.forEach(card => {
-        deck.push({ ...card, id: card.id + "_1" }); // Unique ID for copies
-        deck.push({ ...card, id: card.id + "_2" });
+        const quantity = deckConfig && deckConfig[card.id] !== undefined ? deckConfig[card.id] : 2;
+        for (let i = 0; i < quantity; i++) {
+            deck.push({ ...card, id: card.id + "_" + (i + 1) });
+        }
     });
 
     // Shuffle (Fisher-Yates)
@@ -54,17 +56,17 @@ interface Room {
     doorDeck: any[]; // GameCard[]
 
     treasureDeck: any[]; // GameCard[]
-    phase: 'kick' | 'action' | 'combat' | 'end';
-    pendingDraw?: {
-        card: any;
-        playerId: string;
-        isPublic: boolean;
-    };
+    turnPhase: 'kick_open' | 'action_selection' | 'end';
+    deckConfiguration?: DeckConfiguration;
     currentCombat?: {
         monster: any; // MonsterCard
         playerId: string;
         status: 'active' | 'resolved';
+        timer?: number;
+        playerBonus?: number;
+        monsterBonus?: number;
     };
+    timerInterval?: NodeJS.Timeout | null;
 }
 
 const app = express();
@@ -77,15 +79,121 @@ const io = new Server(server, {
 
 const rooms: Record<string, Room> = {};
 
+/**
+ * Sends room data to all players in the room, masking sensitive information (like other players' backpack contents)
+ */
+function emitRoomUpdate(roomId: string) {
+    const room = rooms[roomId];
+    if (!room) return;
+
+    // Create a copy of the room and remove non-serializable objects (like timerInterval)
+    const { timerInterval, ...serializableRoom } = room;
+
+    room.players.forEach(p => {
+        // DEBUG LOGGING
+        // console.log(`[DEBUG] Player ${p.name} activeModifiers:`, p.activeModifiers); 
+
+        const maskedPlayers = room.players.map(player => {
+            if (player.id === p.id) {
+                return player; // Send full data to owner
+            }
+            return {
+                ...player,
+                hand: player.hand.map(() => ({ hidden: true })), // Mask hand
+                backpack: player.backpack.map(() => ({ hidden: true })) // Mask contents but keep count
+            };
+        });
+
+        const maskedRoom = { ...serializableRoom, players: maskedPlayers };
+        io.to(p.id).emit("roomUpdate", maskedRoom);
+    });
+}
+
+function handleResolveCombat(roomId: string) {
+    const room = rooms[roomId];
+    if (!room || !room.currentCombat || room.currentCombat.status !== 'active') return;
+
+    // Clear timer
+    if (room.timerInterval) {
+        clearInterval(room.timerInterval);
+        room.timerInterval = null;
+    }
+
+    const currentCombat = room.currentCombat;
+    const player = room.players.find(p => p.id === currentCombat.playerId);
+    if (!player) return;
+
+    const monster = currentCombat.monster;
+
+    // Explicitly calculate strengths to ensure no type issues or missing prototype methods
+    const playerLevel = Number(player.level) || 0;
+    let equipmentBonus = 0;
+    if (player.equipment) {
+        player.equipment.forEach(item => {
+            if (item.bonus) equipmentBonus += Number(item.bonus);
+        });
+    }
+
+    const playerBonus = Number(currentCombat.playerBonus) || 0;
+    const monsterLevel = Number(monster.level) || 0;
+    const monsterBonus = Number(currentCombat.monsterBonus) || 0;
+
+    let activeModifiersBonus = 0;
+    if (player.activeModifiers) {
+        player.activeModifiers.forEach(mod => activeModifiersBonus += mod.value);
+    }
+
+    const playerTotalStrength = playerLevel + equipmentBonus + playerBonus + activeModifiersBonus;
+    const monsterTotalStrength = monsterLevel + monsterBonus;
+
+    console.log(`[COMBAT RESOLUTION] Room: ${roomId}`);
+    console.log(`Player: ${player.name} | Lvl: ${playerLevel} + Equip: ${equipmentBonus} + Bonus: ${playerBonus} = TOTAL: ${playerTotalStrength}`);
+    console.log(`Monster: ${monster.name} | Lvl: ${monsterLevel} + Bonus: ${monsterBonus} = TOTAL: ${monsterTotalStrength}`);
+
+    // In Munchkin, player must be STRICTLY GREATER to win (unless they have Warrior/Savasci class)
+    // For now, we assume simple comparison.
+    if (playerTotalStrength > monsterTotalStrength) {
+        // WIN
+        const oldLevel = player.level;
+        player.level = Math.min(10, player.level + (monster.levelReward || 1));
+
+        const treasureCount = monster.treasure || 1;
+        const earnedTreasures = [];
+        for (let i = 0; i < treasureCount; i++) {
+            if (!room.treasureDeck || room.treasureDeck.length === 0) {
+                room.treasureDeck = initializeTreasureDeck(room.deckConfiguration);
+            }
+            const tCard = room.treasureDeck.pop();
+            if (tCard) {
+                player.hand.push(tCard);
+                earnedTreasures.push(tCard.name);
+            }
+        }
+
+        console.log(`Result: WIN for ${player.name}`);
+        io.to(roomId).emit("notification", `${player.name} canavarı yendi! Seviye: ${oldLevel} -> ${player.level}. Hazineler: ${earnedTreasures.join(", ")}`);
+        io.to(roomId).emit("combatResolved", { result: 'win', player });
+    } else {
+        // LOSE
+        const oldLevel = player.level;
+        player.level = Math.max(1, player.level - 1);
+
+        console.log(`Result: LOSS for ${player.name}`);
+        io.to(roomId).emit("notification", `${player.name} savaşı kaybetti! Canavarın laneti üzerine çöktü. Seviye: ${oldLevel} -> ${player.level}.`);
+        io.to(roomId).emit("combatResolved", { result: 'loss', player });
+    }
+
+    room.currentCombat = undefined;
+    emitRoomUpdate(roomId);
+}
+
 io.on("connection", (socket: Socket) => {
     console.log("Bağlanan:", socket.id);
 
     // 🏠 ODA OLUŞTUR
     socket.on("createRoom", ({ playerName }: { playerName: string }) => {
         const roomId = generateRoomId();
-
         const player = new Player(socket.id, playerName);
-
         const room: Room = {
             id: roomId,
             hostId: socket.id,
@@ -93,19 +201,14 @@ io.on("connection", (socket: Socket) => {
             started: false,
             currentTurn: 0,
             discardPile: [],
-
             doorDeck: initializeDoorDeck(),
             treasureDeck: initializeTreasureDeck(),
-            phase: 'kick'
+            turnPhase: 'kick_open'
         };
-
         rooms[roomId] = room;
         socket.join(roomId);
-
-        console.log("ROOM CREATED:", room);
-
         socket.emit("roomCreated", { roomId });
-        io.to(roomId).emit("roomUpdate", room);
+        emitRoomUpdate(roomId);
     });
 
     // ➕ ODAYA KATIL
@@ -115,44 +218,51 @@ io.on("connection", (socket: Socket) => {
             socket.emit("error", "Oda bulunamadı");
             return;
         }
-
-        // Prevent duplicate joining if needed, or re-connect logic
         const existingPlayer = room.players.find(p => p.id === socket.id);
         if (!existingPlayer) {
             const player = new Player(socket.id, playerName);
             room.players.push(player);
         }
-
-        console.log("ROOM JOINED:", room);
-
         socket.join(roomId);
-        io.to(roomId).emit("roomUpdate", room);
+        emitRoomUpdate(roomId);
     });
 
+    socket.on("updateDeckConfig", ({ roomId, deckConfig }: { roomId: string; deckConfig: DeckConfiguration }) => {
+        const room = rooms[roomId];
+        if (!room || socket.id !== room.hostId) return;
 
-    // ▶️ OYUNU BAŞLAT
+        room.deckConfiguration = deckConfig;
+        console.log("Deck configuration updated for room", roomId);
+        emitRoomUpdate(roomId);
+    });
+
     socket.on("startGame", (roomId: string) => {
         const room = rooms[roomId];
-        if (!room) return;
-
-        if (socket.id !== room.hostId) return;
+        if (!room || socket.id !== room.hostId) return;
 
         console.log("Starting game for room", roomId);
 
-        // Deal 4 Door cards and 4 Treasure cards to each player
+        // Re-initialize decks with custom configuration
+        room.doorDeck = initializeDoorDeck(room.deckConfiguration);
+        room.treasureDeck = initializeTreasureDeck(room.deckConfiguration);
+
         room.players.forEach(player => {
-            player.hand = []; // Reset hand
-            // Simple mock dealing - random from decks
+            player.hand = [];
+            // Deal 4 Door and 4 Treasure
             for (let i = 0; i < 4; i++) {
-                player.hand.push(DOOR_DECK[Math.floor(Math.random() * DOOR_DECK.length)]);
-                player.hand.push(TREASURE_DECK[Math.floor(Math.random() * TREASURE_DECK.length)]);
+                if (room.doorDeck.length === 0) room.doorDeck = initializeDoorDeck(room.deckConfiguration);
+                const dCard = room.doorDeck.pop();
+                if (dCard) player.hand.push(dCard);
+
+                if (room.treasureDeck.length === 0) room.treasureDeck = initializeTreasureDeck(room.deckConfiguration);
+                const tCard = room.treasureDeck.pop();
+                if (tCard) player.hand.push(tCard);
             }
         });
 
         room.started = true;
-        room.phase = 'kick';
         io.to(roomId).emit("gameStarted", room);
-        io.to(roomId).emit("roomUpdate", room);
+        emitRoomUpdate(roomId);
     });
 
     // 🔁 SIRA GEÇ
@@ -160,72 +270,163 @@ io.on("connection", (socket: Socket) => {
         const room = rooms[roomId];
         if (!room) return;
 
-        room.currentTurn = (room.currentTurn + 1) % room.players.length;
-        room.phase = 'kick';
-        console.log("Turn changed to", room.currentTurn);
+        // Reset turn-based counters for current player
+        const currentPlayer = room.players[room.currentTurn];
+        if (currentPlayer) {
+            currentPlayer.itemsSoldThisTurn = 0;
+        }
 
-        io.to(roomId).emit("turnChanged", room);
-        io.to(roomId).emit("roomUpdate", room);
+        // Decrement Duration of Modifiers
+        // Decrement Duration of Modifiers for the CURRENT player only
+        if (currentPlayer.activeModifiers) {
+            currentPlayer.activeModifiers.forEach(mod => mod.duration--);
+            currentPlayer.activeModifiers = currentPlayer.activeModifiers.filter(mod => mod.duration > 0);
+        }
+
+        room.currentTurn = (room.currentTurn + 1) % room.players.length;
+
+        // Reset Phase for Next Player
+        room.turnPhase = 'kick_open';
+
+        emitRoomUpdate(roomId);
     });
 
     // 🃏 KART OYNA
     socket.on("playCard", ({ roomId, cardId }: { roomId: string; cardId: string }) => {
         const room = rooms[roomId];
         if (!room) return;
-
         const player = room.players.find(p => p.id === socket.id);
         if (!player) return;
 
-        // Kartı elinden bul ve çıkar
         const cardIndex = player.hand.findIndex(c => c.id === cardId);
         if (cardIndex > -1) {
             const playedCard = player.hand[cardIndex];
             player.hand.splice(cardIndex, 1);
-            console.log(`Player ${player.name} played card: ${playedCard.name} (${playedCard.subType})`);
 
-            // Kart Türüne Göre İşlem Yap
             if (playedCard.subType === 'item') {
                 const itemSlot = playedCard.slot;
                 if (itemSlot) {
-                    // Check slot limits
                     let existingItemIndex = -1;
-
                     if (itemSlot === 'hand') {
-                        // Max 2 hands
                         const handItems = player.equipment.filter(i => i.slot === 'hand');
-                        if (handItems.length >= 2) {
-                            // Find the first hand item to replace (simple swap)
-                            existingItemIndex = player.equipment.findIndex(i => i.slot === 'hand');
-                        }
+                        if (handItems.length >= 2) existingItemIndex = player.equipment.findIndex(i => i.slot === 'hand');
                     } else {
-                        // Max 1 for other slots
                         existingItemIndex = player.equipment.findIndex(i => i.slot === itemSlot);
                     }
-
                     if (existingItemIndex > -1) {
-                        // Unequip old item (return to hand)
                         const oldItem = player.equipment[existingItemIndex];
                         player.equipment.splice(existingItemIndex, 1);
                         player.hand.push(oldItem);
-                        console.log(`Swapped ${oldItem.name} with ${playedCard.name}`);
                     }
                 }
                 player.equipment.push(playedCard);
             } else if (playedCard.subType === 'race') {
-                // Varsa eski ırkı ele geri al veya at (basitlik için direkt değişiyor)
                 player.race = playedCard;
             } else if (playedCard.subType === 'class') {
                 player.class = playedCard;
             } else if (playedCard.subType === 'blessing') {
-                // Kutsama efekti - şimdilik sadece mesaj
-                console.log("Blessing played:", playedCard.effect);
-                // Tek kullanımlık olduğu için yok olur (zaten elden silindi)
-            } else {
-                // Diğer kartlar (örneğin canavar oynandı - şu anlık boş)
-                console.log("Other card played");
+                if (playedCard.id === 'b_ballipust' || (playedCard.effect && playedCard.effect.includes && playedCard.effect.includes("Level Up"))) {
+                    if (player.level < 9) player.level += 1;
+                }
             }
 
-            io.to(roomId).emit("roomUpdate", room);
+            if (room.currentCombat && room.currentCombat.status === 'active') {
+                if (room.currentCombat.timer !== undefined) room.currentCombat.timer += 2;
+            }
+            emitRoomUpdate(roomId);
+        }
+    });
+
+    // 🪄 SAVAŞ BÜYÜSÜ OYNA
+    socket.on("playFightSpell", ({ roomId, cardId, target, auxiliaryCardId }: { roomId: string; cardId: string; target: 'player' | 'monster', auxiliaryCardId?: string }) => {
+        const room = rooms[roomId];
+        if (!room || !room.currentCombat || room.currentCombat.status !== 'active') return;
+        const player = room.players.find(p => p.id === socket.id);
+        if (!player) return;
+
+        let cardIndex = player.hand.findIndex(c => c.id === cardId);
+        let fromHand = true;
+        if (cardIndex === -1) {
+            cardIndex = player.backpack.findIndex(c => c.id === cardId);
+            fromHand = false;
+        }
+
+        if (cardIndex > -1) {
+            const card = fromHand ? player.hand[cardIndex] : player.backpack[cardIndex];
+            if (card.subType !== 'fightspells') return;
+
+            if (fromHand) player.hand.splice(cardIndex, 1);
+            else player.backpack.splice(cardIndex, 1);
+
+            // SPECIAL CARD: ARA BULUCU
+            if (card.id.startsWith('fs_arabulucu')) {
+                if (target !== 'player') {
+                    socket.emit("error", "Ara Bulucu sadece oyuncuya (savaşçıya) kullanılabilir!");
+                    return;
+                }
+                const combatant = room.players.find(p => p.id === room.currentCombat!.playerId);
+                if (combatant) {
+                    const oldLevel = combatant.level;
+                    combatant.level = Math.max(1, combatant.level - 1);
+
+                    // Clear timer
+                    if (room.timerInterval) {
+                        clearInterval(room.timerInterval);
+                        room.timerInterval = null;
+                    }
+
+                    io.to(roomId).emit("notification", `${player.name} Ara Bulucu oynadı! Barış sağlandı ama ${combatant.name} 1 seviye kaybetti (${oldLevel} -> ${combatant.level}). Hazine kazanılmadı.`);
+                    io.to(roomId).emit("combatResolved", { result: 'win', player: combatant }); // Still marked as 'win' for UI purposes but no rewards
+
+                    room.currentCombat = undefined;
+                    emitRoomUpdate(roomId);
+                    return;
+                }
+            }
+
+            // SPECIAL CARD: OLM BAK GİT
+            if (card.id.startsWith('fs_olmbakgit')) {
+                if (!auxiliaryCardId) {
+                    socket.emit("error", "Olm Bak Git için bir canavar seçmelisiniz!");
+                    return;
+                }
+                const monsterIndex = player.hand.findIndex(c => c.id === auxiliaryCardId);
+                if (monsterIndex === -1) {
+                    socket.emit("error", "Seçilen canavar elinizde değil!");
+                    return;
+                }
+                const selectedMonster = player.hand[monsterIndex];
+                if (selectedMonster.subType !== 'monster') {
+                    socket.emit("error", "Sadece canavar kartı seçebilirsiniz!");
+                    return;
+                }
+
+                // Discard selected monster
+                player.hand.splice(monsterIndex, 1);
+                room.discardPile.push(selectedMonster);
+
+                const monsterPower = selectedMonster.level || 0;
+                if (target === 'player') room.currentCombat.playerBonus = (room.currentCombat.playerBonus || 0) + monsterPower;
+                else room.currentCombat.monsterBonus = (room.currentCombat.monsterBonus || 0) + monsterPower;
+
+                if (room.currentCombat.timer !== undefined) {
+                    room.currentCombat.timer += 5;
+                }
+
+                io.to(roomId).emit("notification", `${player.name} Olm Bak Git oynadı! ${selectedMonster.name} canavarını (${monsterPower} Güç) ${target === 'player' ? 'Savaşçı' : 'Canavar'} tarafına dahil etti!`);
+                emitRoomUpdate(roomId);
+                return;
+            }
+
+            const bonus = card.bonus || 0;
+            if (target === 'player') room.currentCombat.playerBonus = (room.currentCombat.playerBonus || 0) + bonus;
+            else room.currentCombat.monsterBonus = (room.currentCombat.monsterBonus || 0) + bonus;
+
+            if (room.currentCombat.timer !== undefined) {
+                room.currentCombat.timer += 5;
+                io.to(roomId).emit("notification", `${player.name} bir savaş büyüsü oynadı! Savaş süresi 5 saniye uzadı.`);
+            }
+            emitRoomUpdate(roomId);
         }
     });
 
@@ -233,7 +434,6 @@ io.on("connection", (socket: Socket) => {
     socket.on("discardCard", ({ roomId, cardId }: { roomId: string; cardId: string }) => {
         const room = rooms[roomId];
         if (!room) return;
-
         const player = room.players.find(p => p.id === socket.id);
         if (!player) return;
 
@@ -242,253 +442,401 @@ io.on("connection", (socket: Socket) => {
             const discardedCard = player.hand[cardIndex];
             player.hand.splice(cardIndex, 1);
 
-            // Altın Değeri Varsa Ekle
             if (discardedCard.goldValue) {
-                player.gold += discardedCard.goldValue;
+                let saleValue = discardedCard.goldValue;
+
+                // ESNAF ABILITY: First item sold in turn gets 2x price
+                // Check if it's player's turn is already implicit as they can usually only play on their turn, 
+                // but let's strictly check if needed. logic: "itemsSoldThisTurn" reset at endTurn.
+                if (player.class?.name === 'Esnaf' && player.itemsSoldThisTurn === 0) {
+                    saleValue *= 2;
+                }
+
+                player.gold += saleValue;
+                player.itemsSoldThisTurn++;
             }
 
             room.discardPile.push(discardedCard);
-
-            console.log(`Player ${player.name} discarded: ${discardedCard.name}, Gained ${discardedCard.goldValue || 0} Gold`);
-            io.to(roomId).emit("roomUpdate", room);
+            emitRoomUpdate(roomId);
         }
     });
 
-    // 🚪 KAPI KARTI ÇEK (KAPIYI TEKMELE)
+    // 🚪 KAPI KARTI ÇEK (KICK OPEN THE DOOR)
     socket.on("drawDoorCard", ({ roomId }: { roomId: string }) => {
         const room = rooms[roomId];
         if (!room) return;
-
         const player = room.players.find(p => p.id === socket.id);
         if (!player) return;
 
-        // Sadece sırası olan oyuncu ve doğru fazda çekebilir
-        const currentPlayerIndex = room.currentTurn;
-        if (room.players[currentPlayerIndex].id !== socket.id) {
-            socket.emit("error", "Sıra sende değil!");
+        // Ensure it's the right phase
+        if (room.turnPhase !== 'kick_open') {
+            socket.emit("error", "Şu an kapı çekme evresinde değilsin!");
             return;
         }
 
-        if (room.phase !== 'kick') {
-            socket.emit("error", "Bu aşamada kapı kartı çekemezsin!");
-            return;
-        }
-
-        // Deste bittiyse yenile
-        if (!room.doorDeck || room.doorDeck.length === 0) {
-            room.doorDeck = initializeDoorDeck();
-            console.log("Door Deck Reshuffled!");
-            io.to(roomId).emit("notification", "Kapı destesi bitti ve yeniden karıldı!");
-        }
-
+        if (!room.doorDeck || room.doorDeck.length === 0) room.doorDeck = initializeDoorDeck(room.deckConfiguration);
         const card = room.doorDeck.pop();
         if (card) {
-            console.log(`Player ${player.name} kicked open the door: ${card.name} (${card.subType})`);
+            // SHOW CARD LOGIC
+            // User requested: "Don't show notification (overlay) to others if monster, as combat UI appears".
+            if (card.subType === 'monster') {
+                // Only show to the drawer (optional, as combat UI shows it too, but good for feedback)
+                socket.emit('showCard', { card, playerId: player.id });
+            } else {
+                // Show to everyone
+                io.in(roomId).emit('showCard', { card, playerId: player.id });
+            }
+            // io.in(roomId).emit('showCard', { card, playerId: player.id }); // Old global emit
 
             if (card.subType === 'monster') {
-                // CANAVAR ÇIKTI, DÖVÜŞ BAŞLASIN
-                room.phase = 'combat';
+                // MONSTER FOUND! DIRECTLY TO COMBAT
                 room.currentCombat = {
                     monster: card,
                     playerId: player.id,
-                    status: 'active'
+                    status: 'active',
+                    timer: 7,
+                    playerBonus: 0,
+                    monsterBonus: 0
                 };
-                io.to(roomId).emit("combatStarted", { monster: card, playerId: player.id });
-                io.to(roomId).emit("notification", `${player.name} bir canavarla karşılaştı: ${card.name}! (Seviye ${card.level})`);
-                io.to(roomId).emit("roomUpdate", room);
+                // Timer logic
+                if (room.timerInterval) clearInterval(room.timerInterval);
+                room.timerInterval = setInterval(() => {
+                    if (room.currentCombat && room.currentCombat.timer !== undefined) {
+                        room.currentCombat.timer--;
+                        if (room.currentCombat.timer <= 0) {
+                            if (room.timerInterval) clearInterval(room.timerInterval);
+                            room.timerInterval = null;
+                            handleResolveCombat(roomId);
+                        } else {
+                            emitRoomUpdate(roomId);
+                        }
+                    }
+                }, 1000);
+
+                room.turnPhase = 'end';
+
+            } else if (card.subType === 'curse') {
+                // CURSE FOUND! APPLY IMMEDIATELY
+                if (card.id.startsWith('c_cigkofte')) {
+                    // Duration: 3 turns
+                    player.activeModifiers.push({ source: card.name, value: -3, duration: 3 });
+                    room.players.forEach(p => {
+                        const socket = io.sockets.sockets.get(p.id);
+                        if (socket) socket.emit("toast", { message: `${player.name} lanetlendi! (${card.name}) Güç -3 (3 Tur).`, type: "warning" });
+                    });
+                } else if (card.id.startsWith('c1')) {
+                    // Nazar Çıktı - Broadened to ANY card in hand, equipment, or backpack
+                    let candidateItems: { source: 'hand' | 'equipment' | 'backpack', index: number, card: any }[] = [];
+
+                    player.hand.forEach((c, idx) => { candidateItems.push({ source: 'hand', index: idx, card: c }); });
+                    player.equipment.forEach((c, idx) => { candidateItems.push({ source: 'equipment', index: idx, card: c }); });
+                    player.backpack.forEach((c, idx) => { candidateItems.push({ source: 'backpack', index: idx, card: c }); });
+
+                    if (candidateItems.length > 0) {
+                        const randomIndex = Math.floor(Math.random() * candidateItems.length);
+                        const selected = candidateItems[randomIndex];
+
+                        if (selected.source === 'hand') player.hand.splice(selected.index, 1);
+                        else if (selected.source === 'equipment') player.equipment.splice(selected.index, 1);
+                        else if (selected.source === 'backpack') player.backpack.splice(selected.index, 1);
+
+                        room.discardPile.push(selected.card);
+
+                        room.players.forEach(p => {
+                            const socket = io.sockets.sockets.get(p.id);
+                            if (socket) socket.emit("toast", { message: `${player.name} lanetlendi! ${selected.card.name} yok oldu!`, type: "error" });
+                        });
+                    } else {
+                        room.players.forEach(p => {
+                            const socket = io.sockets.sockets.get(p.id);
+                            if (socket) socket.emit("toast", { message: `${player.name} lanetlendi ama hiçbir kartı yok!`, type: "info" });
+                        });
+                    }
+                }
+
+
+                // Discard the curse
+                room.discardPile.push(card);
+
+                // Proceed to Action Selection 
+                // (User: "lanet çekerse de devreye girmiyor... bunun dışındaki kartlar envantere alınsın")
+                // Meaning Curse -> Effect, Discard. Others -> Inventory.
+                room.turnPhase = 'action_selection';
+
             } else {
-                // Canavar değilse POPUP göster (Genel)
-                room.pendingDraw = {
-                    card: card,
-                    playerId: player.id,
-                    isPublic: true
-                };
-                io.to(roomId).emit("roomUpdate", room);
+                // NO MONSTER OR CURSE (Class, Race, Item, etc.) -> INVENTORY
+                player.hand.push(card);
+                // ENABLE NEXT PHASE
+                room.turnPhase = 'action_selection';
             }
+            emitRoomUpdate(roomId);
         }
     });
 
-    // 📩 KARTI AL
-    socket.on("takeCard", ({ roomId }: { roomId: string }) => {
-        const room = rooms[roomId];
-        if (!room || !room.pendingDraw) return;
-
-        if (room.pendingDraw.playerId !== socket.id) {
-            socket.emit("error", "Sadece kartı çeken kişi alabilir!");
-            return;
-        }
-
-        const player = room.players.find(p => p.id === socket.id);
-        if (!player) return;
-
-        const card = room.pendingDraw.card;
-
-        if (card.subType === 'curse' && room.pendingDraw.isPublic) {
-            // Lanet ise discard olur (zaten uygulanmış sayıyoruz şimdilik)
-            room.discardPile.push(card);
-        } else {
-            player.hand.push(card);
-        }
-
-        room.pendingDraw = undefined;
-        room.phase = (room.phase === 'kick') ? 'action' : 'end';
-
-        io.to(roomId).emit("roomUpdate", room);
+    // 💰 HAZİNE KARTI ÇEK
+    socket.on("drawTreasureCard", ({ roomId }: { roomId: string }) => {
+        socket.emit("error", "Hazine kartları sadece canavarı yenince otomatik olarak verilir. Buradan çekemezsin!");
     });
 
-    // 😈 BELA ARA
+    // 🧛 BELA ARA (LOOK FOR TROUBLE)
     socket.on("lookForTrouble", ({ roomId, cardId }: { roomId: string; cardId: string }) => {
         const room = rooms[roomId];
         if (!room) return;
-
         const player = room.players.find(p => p.id === socket.id);
         if (!player) return;
 
-        if (room.phase !== 'action') {
-            socket.emit("error", "Bu aşamada bela arayamazsın!");
-            return;
-        }
+        if (room.turnPhase !== 'action_selection') return;
 
+        // Find card in hand
         const cardIndex = player.hand.findIndex(c => c.id === cardId);
         if (cardIndex === -1) return;
 
         const card = player.hand[cardIndex];
         if (card.subType !== 'monster') {
-            socket.emit("error", "Sadece bir canavar ile bela arayabilirsin!");
+            socket.emit("error", "Sadece canavar kartı ile bela aranabilir!");
             return;
         }
 
-        // Canavarı elinden çıkar ve savaşı başlat
+        // Remove from hand and start combat
         player.hand.splice(cardIndex, 1);
-        room.phase = 'combat';
+
         room.currentCombat = {
             monster: card,
             playerId: player.id,
-            status: 'active'
+            status: 'active',
+            timer: 7,
+            playerBonus: 0,
+            monsterBonus: 0
         };
 
-        console.log(`Player ${player.name} is looking for trouble with ${card.name}`);
-        io.to(roomId).emit("combatStarted", { monster: card, playerId: player.id });
-        io.to(roomId).emit("notification", `${player.name} elindeki bir canavarla kapışıyor: ${card.name}!`);
-        io.to(roomId).emit("roomUpdate", room);
+        // Timer logic
+        if (room.timerInterval) clearInterval(room.timerInterval);
+        room.timerInterval = setInterval(() => {
+            if (room.currentCombat && room.currentCombat.timer !== undefined) {
+                room.currentCombat.timer--;
+                if (room.currentCombat.timer <= 0) {
+                    if (room.timerInterval) clearInterval(room.timerInterval);
+                    room.timerInterval = null;
+                    handleResolveCombat(roomId);
+                } else {
+                    emitRoomUpdate(roomId);
+                }
+            }
+        }, 1000);
+
+        room.turnPhase = 'end'; // Action taken
+        emitRoomUpdate(roomId);
     });
 
-    // 💰 YAĞMALA
+    // 🕵️ KAPIYI YAĞMALA (LOOT THE ROOM)
     socket.on("lootTheRoom", ({ roomId }: { roomId: string }) => {
         const room = rooms[roomId];
         if (!room) return;
-
         const player = room.players.find(p => p.id === socket.id);
         if (!player) return;
 
-        if (room.phase !== 'action') {
-            socket.emit("error", "Bu aşamada yağma yapamazsın!");
-            return;
-        }
+        if (room.turnPhase !== 'action_selection') return;
 
-        // Deste bittiyse yenile
-        if (!room.doorDeck || room.doorDeck.length === 0) {
-            room.doorDeck = initializeDoorDeck();
-        }
-
+        if (!room.doorDeck || room.doorDeck.length === 0) room.doorDeck = initializeDoorDeck(room.deckConfiguration);
         const card = room.doorDeck.pop();
         if (card) {
-            room.pendingDraw = {
-                card: card,
-                playerId: player.id,
-                isPublic: false
-            };
-            console.log(`Player ${player.name} looted the room (pending draw)`);
-            io.to(roomId).emit("notification", `${player.name} odayı sessizce yağmaladı.`);
-            io.to(roomId).emit("roomUpdate", room);
+            // Draw Face Down (Visible to player, but logically known as "face down draw" in Munchkin terms, usually means just put in hand without showing others)
+            // Since our emitRoomUpdate masks other players' hands anyway, just pushing to hand is "face down" to others.
+            player.hand.push(card);
+
+            // "alınan kartı diğer oyuncular göremesin" -> Hand masking already handles this.
+
+            // End Turn after looting? PROMPT: "devam ete basıldığı zaman tur sonraki oyuncuya gitsin"
+            // "kapı yağmalama kartına basıldığı zaman ... devam ete basıldığı zaman"
+            // Suggests Loot executes, THEN they must press Continue?
+            // BUT "oyuncu bu düğmelerden sdc bir tanesine basabilsin" (Only ONE of these buttons)
+            // So if I click Loot, I used my "one button". I shouldn't be able to click Look For Trouble.
+            // But can I click Continue? Yes, to pass the turn. 
+            // OR does Loot automatically end turn?
+            // "Loot... directly to inventory... hidden from others... continue button passes turn"
+            // Let's make Loot change phase to 'end'. User can then click 'Continue' (EndTurn) or we auto-end?
+            // Usually in UI, if I click Loot, I'm done. I can just wait or click standard "End Turn" button.
+            // The prompt says "bir tanede devam et düğmesi ekle... oyuncu bu düğmelerden sdc bir tanesine basabilsin".
+            // Implementation: Loot changes phase to 'end'. Then user manually clicks "End Turn" (the standard one) OR "Devam Et" action button becomes a "End Turn" trigger.
+            // Let's set phase to 'end'. The UI will hide the action buttons.
+            room.turnPhase = 'end';
+            emitRoomUpdate(roomId);
         }
     });
 
-    // ⚔️ DÖVÜŞÜ ÇÖZ
-    socket.on("resolveCombat", ({ roomId }: { roomId: string }) => {
-        const room = rooms[roomId];
-        if (!room || !room.currentCombat || room.currentCombat.status !== 'active') return;
-
-        const player = room.players.find(p => p.id === room.currentCombat?.playerId);
-        if (!player) return;
-
-        if (socket.id !== player.id) {
-            // Sadece savaştaki oyuncu çözebilir (şimdilik)
-            return;
-        }
-
-        const monster = room.currentCombat.monster;
-
-        // Player Strength Check (Need to recalculate here or trust client? -> Should recalculate on server)
-        // Re-calculating using logic from Player class (getter logic)
-        // Since `player` is an instance of Player class (memory object), the getter `combatStrength` should work!
-        const playerStrength = player.combatStrength;
-        const monsterStrength = monster.level; // Basic monster level for now
-
-        console.log(`Combat: Player ${playerStrength} vs Monster ${monsterStrength}`);
-
-        if (playerStrength > monsterStrength) {
-            // WIN
-            console.log("Player Wins!");
-            // 1. Level Up
-            const oldLevel = player.level;
-            player.level = Math.min(10, player.level + (monster.levelReward || 1));
-
-            // 2. Draw Treasures
-            const treasureCount = monster.treasure || 1;
-            const earnedTreasures = [];
-            for (let i = 0; i < treasureCount; i++) {
-                if (!room.treasureDeck || room.treasureDeck.length === 0) {
-                    room.treasureDeck = initializeTreasureDeck();
-                    io.to(roomId).emit("notification", "Hazine destesi bitti ve yeniden karıldı!");
-                }
-                const tCard = room.treasureDeck.pop();
-                if (tCard) {
-                    player.hand.push(tCard);
-                    earnedTreasures.push(tCard.name);
-                }
-            }
-
-            io.to(roomId).emit("notification", `${player.name} canavarı yendi! Seviye: ${oldLevel} -> ${player.level}. Hazineler: ${earnedTreasures.join(", ")}`);
-            io.to(roomId).emit("combatResolved", { result: 'win', player });
-        } else {
-            // LOSE -> Bad Stuff
-            console.log("Player Loses!");
-            // Implementing generic Bad Stuff: Lose 1 Level (min 1)
-            // TODO: Implement specific card bad stuff later
-            const oldLevel = player.level;
-            player.level = Math.max(1, player.level - 1);
-
-            io.to(roomId).emit("notification", `${player.name} savaşı kaybetti! Canavarın laneti üzerine çöktü. Seviye: ${oldLevel} -> ${player.level}.`);
-            io.to(roomId).emit("combatResolved", { result: 'loss', player });
-        }
-
-        // End Combat State
-        room.currentCombat = undefined;
-        room.phase = 'end'; // Savaş bittikten sonra tur biter (normalde yardım vs. olabilir ama şimdilik turu bitiriyoruz)
-        io.to(roomId).emit("roomUpdate", room);
-    });
-
-    // 🏆 HAZİNE KARTI ÇEK
-    socket.on("drawTreasureCard", ({ roomId }: { roomId: string }) => {
+    // ⏩ AKSİYON EVRESİNİ GEÇ (PASS ACTION PHASE)
+    socket.on("passActionPhase", (roomId: string) => {
         const room = rooms[roomId];
         if (!room) return;
 
+        // Ensure it's the right player
+        if (room.players[room.currentTurn].id !== socket.id) return;
+
+        room.turnPhase = 'end';
+        emitRoomUpdate(roomId);
+    });
+
+    // 🪄 LANET OYNA (PLAY CURSE)
+    socket.on("playCurse", ({ roomId, cardId, targetId }: { roomId: string; cardId: string; targetId: string }) => {
+        const room = rooms[roomId];
+        if (!room) return;
         const player = room.players.find(p => p.id === socket.id);
         if (!player) return;
 
-        // Deste bittiyse yenile
-        if (!room.treasureDeck || room.treasureDeck.length === 0) {
-            room.treasureDeck = initializeTreasureDeck();
-            console.log("Treasure Deck Reshuffled!");
-            io.to(roomId).emit("notification", "Hazine destesi bitti ve yeniden karıldı!");
+        // Find card
+        const cardIndex = player.hand.findIndex(c => c.id === cardId);
+        if (cardIndex === -1) return;
+        const card = player.hand[cardIndex];
+
+        if (card.subType !== 'curse') {
+            socket.emit("error", "Bu bir lanet kartı değil!");
+            return;
         }
 
-        const card = room.treasureDeck.pop();
-        if (card) {
+        const targetPlayer = room.players.find(p => p.id === targetId);
+        if (!targetPlayer) return;
+
+        // Apply Effect
+        if (card.id.startsWith('c_cigkofte')) {
+
+            targetPlayer.activeModifiers.push({ source: card.name, value: -3, duration: 3 });
+            // Notify
+            room.players.forEach(p => {
+                const socket = io.sockets.sockets.get(p.id);
+                if (socket) socket.emit("toast", { message: `${player.name}, ${targetPlayer.name} üzerine ${card.name} oynadı! Güç -3.`, type: "warning" });
+            });
+        } else if (card.id.startsWith('c1')) {
+            // Nazar Çıktı: Discard ANY random card from Hand, Equipment, or Backpack
+            let candidateItems: { source: 'hand' | 'equipment' | 'backpack', index: number, card: any }[] = [];
+
+            // Check Hand
+            targetPlayer.hand.forEach((c, idx) => {
+                candidateItems.push({ source: 'hand', index: idx, card: c });
+            });
+            // Check Equipment
+            targetPlayer.equipment.forEach((c, idx) => {
+                candidateItems.push({ source: 'equipment', index: idx, card: c });
+            });
+            // Check Backpack
+            targetPlayer.backpack.forEach((c, idx) => {
+                candidateItems.push({ source: 'backpack', index: idx, card: c });
+            });
+
+            if (candidateItems.length > 0) {
+                const randomIndex = Math.floor(Math.random() * candidateItems.length);
+                const selected = candidateItems[randomIndex];
+
+                // Remove from source
+                if (selected.source === 'hand') targetPlayer.hand.splice(selected.index, 1);
+                else if (selected.source === 'equipment') targetPlayer.equipment.splice(selected.index, 1);
+                else if (selected.source === 'backpack') targetPlayer.backpack.splice(selected.index, 1);
+
+                room.discardPile.push(selected.card);
+
+                // Notify
+                room.players.forEach(p => {
+                    const socket = io.sockets.sockets.get(p.id);
+                    if (socket) socket.emit("toast", { message: `${player.name}, ${targetPlayer.name} üzerine ${card.name} oynadı! ${selected.card.name} yok oldu!`, type: "error" });
+                });
+            } else {
+                socket.emit("toast", { message: `${targetPlayer.name}'in yok edilecek kartı yok!`, type: "info" });
+            }
+        }
+
+        // Discard
+        player.hand.splice(cardIndex, 1);
+        room.discardPile.push(card);
+
+        // COMBAT INTERVENTION: Extend timer if someone plays a curse during combat
+        if (room.currentCombat && room.currentCombat.status === 'active') {
+            if (room.currentCombat.timer !== undefined) {
+                room.currentCombat.timer += 5;
+                io.to(roomId).emit("notification", `${player.name} bir lanet oynayarak savaşa müdahale etti! Savaş süresi 5 saniye uzadı.`);
+            }
+        }
+
+        emitRoomUpdate(roomId);
+    });
+
+    // 🎒 SIRT ÇANTASINA TAŞI
+    socket.on("moveToBackpack", ({ roomId, cardId }: { roomId: string; cardId: string }) => {
+        const room = rooms[roomId];
+        if (!room) return;
+        const player = room.players.find(p => p.id === socket.id);
+        if (!player) return;
+
+        const cardIndex = player.hand.findIndex(c => c.id === cardId);
+        if (cardIndex > -1) {
+            const card = player.hand[cardIndex];
+            if (card.subType === 'item' || card.subType === 'fightspells') {
+                player.hand.splice(cardIndex, 1);
+                player.backpack.push(card);
+                emitRoomUpdate(roomId);
+            } else {
+                socket.emit("error", "Sadece eşya veya savaş büyüsü koyabilirsin!");
+            }
+        }
+    });
+
+    // 🎒 SIRT ÇANTASINDAN ÇIKAR
+    socket.on("removeFromBackpack", ({ roomId, cardId }: { roomId: string; cardId: string }) => {
+        const room = rooms[roomId];
+        if (!room) return;
+        const player = room.players.find(p => p.id === socket.id);
+        if (!player) return;
+
+        const cardIndex = player.backpack.findIndex(c => c.id === cardId);
+        if (cardIndex > -1) {
+            const card = player.backpack[cardIndex];
+            player.backpack.splice(cardIndex, 1);
             player.hand.push(card);
-            console.log(`Player ${player.name} drew treasure card: ${card.name}`);
-            io.to(roomId).emit("roomUpdate", room);
+            emitRoomUpdate(roomId);
+        }
+    });
+
+    // 🎒 SIRT ÇANTASINDAN KART OYNA
+    socket.on("playFromBackpack", ({ roomId, cardId }: { roomId: string; cardId: string }) => {
+        const room = rooms[roomId];
+        if (!room) return;
+        const player = room.players.find(p => p.id === socket.id);
+        if (!player) return;
+
+        const cardIndex = player.backpack.findIndex(c => c.id === cardId);
+        if (cardIndex > -1) {
+            const playedCard = player.backpack[cardIndex];
+            player.backpack.splice(cardIndex, 1);
+
+            if (playedCard.subType === 'item') {
+                const itemSlot = playedCard.slot;
+                if (itemSlot) {
+                    let existingItemIndex = -1;
+                    if (itemSlot === 'hand') {
+                        const handItems = player.equipment.filter(i => i.slot === 'hand');
+                        if (handItems.length >= 2) existingItemIndex = player.equipment.findIndex(i => i.slot === 'hand');
+                    } else {
+                        existingItemIndex = player.equipment.findIndex(i => i.slot === itemSlot);
+                    }
+                    if (existingItemIndex > -1) {
+                        const oldItem = player.equipment[existingItemIndex];
+                        player.equipment.splice(existingItemIndex, 1);
+                        player.hand.push(oldItem);
+                    }
+                }
+                player.equipment.push(playedCard);
+            } else if (playedCard.subType === 'race') {
+                player.race = playedCard;
+            } else if (playedCard.subType === 'class') {
+                player.class = playedCard;
+            } else if (playedCard.subType === 'blessing') {
+                if (playedCard.id === 'b_ballipust' || (playedCard.effect && playedCard.effect.includes && playedCard.effect.includes("Level Up"))) {
+                    if (player.level < 9) player.level += 1;
+                }
+            }
+
+            if (room.currentCombat && room.currentCombat.status === 'active') {
+                if (room.currentCombat.timer !== undefined) room.currentCombat.timer += 2;
+            }
+            emitRoomUpdate(roomId);
         }
     });
 
@@ -496,55 +844,33 @@ io.on("connection", (socket: Socket) => {
     socket.on("buyLevel", ({ roomId }: { roomId: string }) => {
         const room = rooms[roomId];
         if (!room) return;
-
         const player = room.players.find(p => p.id === socket.id);
         if (!player) return;
 
-        // Kural: Max seviye 9 olabilir. 10. seviyeyi satın alamazsın.
-        if (player.level >= 9) {
-            socket.emit("error", "Seviye 9'dan sonra satın alamazsın! Canavar yenmelisin.");
-            return;
-        }
-
-        if (player.gold >= 1000) {
-            const affordableLevels = Math.floor(player.gold / 1000);
-            // Kazanabileceği maksimum seviye (9'a kadar)
-            const gainableLevels = 9 - player.level;
-
-            // Gerçekten alacağı seviye sayısı (paranın yettiği ile 9'a kalan arasındaki minimum)
-            // Ama her tıklamada 1 seviye alsın demek daha mantıklı UI açısından, 
-            // Veya "Hepsini al" mantığı? 
-            // Kullanıcı "turu bitir tuşunun yanına seviye al tuşu yap" dedi. Tek tek almak daha güvenli.
-
-            player.gold -= 1000;
-            player.level += 1;
-
-            console.log(`Player ${player.name} bought a level. New Level: ${player.level}, Gold Left: ${player.gold}`);
-            io.to(roomId).emit("roomUpdate", room);
-            io.to(roomId).emit("notification", `${player.name} 1000 Altın harcayarak Seviye aldığı! (Lvl ${player.level})`);
-        } else {
-            socket.emit("error", "Yeterli altının yok! (1000 Altın = 1 Seviye)");
+        if (player.level < 9 && player.gold >= 1000) {
+            const levelsToBuy = Math.min(Math.floor(player.gold / 1000), 9 - player.level);
+            if (levelsToBuy > 0) {
+                player.level += levelsToBuy;
+                player.gold = 0;
+                emitRoomUpdate(roomId);
+            }
         }
     });
 
     // ❌ ÇIKIŞ
     socket.on("disconnect", () => {
-        console.log("Ayrılan:", socket.id);
         for (const roomId in rooms) {
             const room = rooms[roomId];
-            // Remove player
             room.players = room.players.filter(p => p.id !== socket.id);
-
             if (room.players.length === 0) {
+                if (room.timerInterval) clearInterval(room.timerInterval);
                 delete rooms[roomId];
             } else {
-                io.to(roomId).emit("roomUpdate", room);
+                emitRoomUpdate(roomId);
             }
         }
     });
 });
 
 const PORT = 3000;
-server.listen(PORT, () =>
-    console.log(`Server ${PORT} portunda çalışıyor`)
-);
+server.listen(PORT, () => console.log(`Server ${PORT} portunda çalışıyor`));

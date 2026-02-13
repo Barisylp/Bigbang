@@ -1,5 +1,5 @@
 export type CardType = 'door' | 'treasure';
-export type SubType = 'monster' | 'curse' | 'race' | 'class' | 'item' | 'modifier' | 'blessing' | 'other';
+export type SubType = 'monster' | 'curse' | 'race' | 'class' | 'item' | 'modifier' | 'blessing' | 'fightspells' | 'other';
 
 export interface Card {
     id: string;
@@ -46,10 +46,19 @@ export interface GenericCard extends Card {
     subType: 'modifier' | 'other';
 }
 
+export interface FightSpellCard extends Card {
+    subType: 'fightspells';
+    bonus: number;
+}
+
 export interface BlessingCard extends Card {
     subType: 'blessing';
     effect: string;
 }
 
+export interface DeckConfiguration {
+    [cardId: string]: number; // Maps base card ID to quantity
+}
+
 // Union type for easier usage
-export type GameCard = MonsterCard | ItemCard | CurseCard | ClassCard | RaceCard | BlessingCard | GenericCard;
+export type GameCard = MonsterCard | ItemCard | CurseCard | ClassCard | RaceCard | BlessingCard | FightSpellCard | GenericCard;

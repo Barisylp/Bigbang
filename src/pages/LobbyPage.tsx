@@ -1,4 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
+import DeckCustomizationModal from '../components/DeckCustomizationModal';
+import type { DeckConfiguration } from '../types/game';
 
 interface LobbyPageProps {
     currentRoom: any;
@@ -7,6 +9,16 @@ interface LobbyPageProps {
 }
 
 const LobbyPage: React.FC<LobbyPageProps> = ({ currentRoom, socket, handleStartGame }) => {
+    const [isModalOpen, setIsModalOpen] = useState(false);
+    const [deckConfig, setDeckConfig] = useState<DeckConfiguration>(currentRoom.deckConfiguration || {});
+
+    const handleUpdateConfig = (config: DeckConfiguration) => {
+        setDeckConfig(config);
+        socket.emit('updateDeckConfig', { roomId: currentRoom.id, deckConfig: config });
+    };
+
+    const isHost = currentRoom.hostId === socket.id;
+
     return (
         <div className="min-h-screen bg-slate-900 text-white flex flex-col items-center justify-center p-4">
             <h1 className="text-3xl font-bold mb-8 text-amber-500">Lobi: {currentRoom.id}</h1>
@@ -22,12 +34,20 @@ const LobbyPage: React.FC<LobbyPageProps> = ({ currentRoom, socket, handleStartG
                     ))}
                 </ul>
 
-                {currentRoom.hostId === socket.id && !currentRoom.started && (
-                    <button
-                        onClick={handleStartGame}
-                        className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded transition">
-                        Oyunu Başlat
-                    </button>
+                {isHost && !currentRoom.started && (
+                    <div className="space-y-3">
+                        <button
+                            onClick={() => setIsModalOpen(true)}
+                            className="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded transition"
+                        >
+                            🃏 Destelerim
+                        </button>
+                        <button
+                            onClick={handleStartGame}
+                            className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded transition">
+                            Oyunu Başlat
+                        </button>
+                    </div>
                 )}
 
                 {currentRoom.started && (
@@ -36,6 +56,13 @@ const LobbyPage: React.FC<LobbyPageProps> = ({ currentRoom, socket, handleStartG
                     </div>
                 )}
             </div>
+
+            <DeckCustomizationModal
+                isOpen={isModalOpen}
+                onClose={() => setIsModalOpen(false)}
+                deckConfig={deckConfig}
+                onUpdateConfig={handleUpdateConfig}
+            />
         </div>
     );
 };

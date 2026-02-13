@@ -51,18 +51,18 @@ export const DOOR_DECK: GameCard[] = [
     } as any,
     {
         id: 'c1',
-        name: 'Nazar Değdi',
+        name: 'Nazar Çıktı',
         type: 'door',
         subType: 'curse',
-        description: 'En iyi eşyan kırıldı. Discard it.',
-        effect: () => console.log('Discard best item'),
+        description: 'Envanterindeki veya çantasındaki rastgele bir eşya yok oldu.',
+        effect: () => console.log('Discard random item'),
     } as any,
     {
         id: 'cl1',
         name: 'Esnaf',
         type: 'door',
         subType: 'class',
-        description: 'Satış yeteneği: Eşyaları 100 altın fazla fiyata satabilirsin.',
+        description: 'Satış yeteneği: Turundaki ilk sattığın eşyayı 2 katı fiyatına satarsın.',
         abilities: ['pazarlik'],
     } as any,
     {
@@ -72,6 +72,14 @@ export const DOOR_DECK: GameCard[] = [
         subType: 'class',
         description: 'Mesai bitti: Savaşta bir kez monsterı görmezden gelip kaçabilirsin (9-5 arası).',
         abilities: ['kacis'],
+    } as any,
+    {
+        id: 'c_cigkofte',
+        name: 'Ekstra Acılı Çiğ Köfte',
+        type: 'door',
+        subType: 'curse',
+        description: 'O kadar acı ki gücünü 3 azalttı! (Bir tur boyunca -3 Güç)',
+        image: '/assets/cards/cigkofte.png',
     } as any,
     {
         id: 'm_bedevi',
@@ -84,6 +92,22 @@ export const DOOR_DECK: GameCard[] = [
         levelReward: 1,
         badStuff: '1 Seviye Kaybedersin.',
         badStuffEffect: () => console.log('Lose 1 level'),
+    } as any,
+    {
+        id: 'fs_arabulucu',
+        name: 'Ara Bulucu',
+        type: 'door',
+        subType: 'fightspells',
+        description: 'Savaşçıya huzur verir. Savaşı anında bitirir. Kazanırsın ama 1 Seviye KAYBEDERSİN ve hiç hazine kazanamazsın. (Sadece Savaşçıya Kullanılır)',
+        bonus: 9999,
+    } as any,
+    {
+        id: 'fs_olmbakgit',
+        name: 'Olm Bak Git',
+        type: 'door',
+        subType: 'fightspells',
+        description: 'Elinizdeki bir canavarı herhangi bir savaşa istediğiniz tarafta dahil edersiniz. Canavarın gücü o tarafa eklenir.',
+        bonus: 0,
     } as any,
 ];
 
@@ -137,5 +161,21 @@ export const TREASURE_DECK: GameCard[] = [
         description: 'Düğünde takarsın. Seviye atlamak için bozdurabilirsin.',
         bonus: 0,
         goldValue: 1000, // 1 Level
+    } as any,
+    {
+        id: 'b_ballipust',
+        name: 'Ballı Puşt',
+        type: 'treasure',
+        subType: 'blessing',
+        description: 'Gene iyisin ha',
+        effect: 'Level Up',
+    } as any,
+    {
+        id: 'fs_mahalleabisi_1',
+        name: 'Mahalle Abisi (Savaş Büyüsü)',
+        type: 'treasure',
+        subType: 'fightspells',
+        description: '50 kuruş için ölür. Seçtiğin taraf +5 güç kazanır.',
+        bonus: 5,
     } as any,
 ];

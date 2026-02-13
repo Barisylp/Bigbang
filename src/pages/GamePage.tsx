@@ -19,6 +19,9 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
                 if (item.bonus) strength += item.bonus;
             });
         }
+        if (player.activeModifiers) {
+            player.activeModifiers.forEach((mod: any) => strength += mod.value);
+        }
         return strength;
     };
 
@@ -65,9 +68,41 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
 
     const [showSpellTarget, setShowSpellTarget] = React.useState<any>(null);
     const [selectingMonsterMode, setSelectingMonsterMode] = React.useState(false);
+    const [shownCard, setShownCard] = React.useState<any>(null);
 
-    const playFightSpell = (cardId: string, target: 'player' | 'monster') => {
-        socket.emit('playFightSpell', { roomId: currentRoom.id, cardId, target });
+    React.useEffect(() => {
+        socket.on('showCard', (data: any) => {
+            setShownCard(data);
+            setTimeout(() => {
+                setShownCard(null);
+            }, 3000);
+        });
+        return () => {
+            socket.off('showCard');
+        };
+    }, []);
+
+    const playFightSpell = (cardId: string, targetId: string, type: 'player' | 'monster') => {
+        if (showSpellTarget.subType === 'curse') {
+            socket.emit('playCurse', { roomId: currentRoom.id, cardId, targetId });
+        } else {
+            socket.emit('playFightSpell', { roomId: currentRoom.id, cardId, target: type }); // legacy 'target' arg was 'player'|'monster' string literal? 
+            // Previous code: `playFightSpell(cardId, target)` where target was 'player' | 'monster'.
+            // Backend `playFightSpell` expects `target: 'player' | 'monster'`.
+            // But wait, backend `playFightSpell` might need to know WHICH player if there are multiple?
+            // "Seçtiğin taraf +5 güç kazanır" -> usually Side.
+            // "targetPlayerId"?
+            // Existing backend `playFightSpell` (I haven't seen it fully but inferred).
+            // Let's assume existing `playFightSpell` just takes "player" (me/combatant) or "monster".
+            // If I reuse `showSpellTarget`, I need to know what to emit.
+
+            // Let's keep `playFightSpell` as is for now and add `playCurseTarget`.
+        }
+        setShowSpellTarget(null);
+    };
+
+    const playCurseTarget = (cardId: string, targetId: string) => {
+        socket.emit('playCurse', { roomId: currentRoom.id, cardId, targetId });
         setShowSpellTarget(null);
     };
 
@@ -184,6 +219,28 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
                         )}
                     </div>
                 </div>
+
+                {/* Active Modifiers (Debuff Box) */}
+                <div className="w-48 bg-red-900/20 p-2 rounded-lg border border-red-800/50 flex flex-col min-h-[5.5rem]">
+                    <div className="text-[10px] text-red-400 mb-1 flex items-center justify-between">
+                        <span>💀 Lanetler & Etkiler</span>
+                    </div>
+
+                    <div className="flex flex-col gap-1">
+                        {(!player.activeModifiers || player.activeModifiers.length === 0) && (
+                            <span className="text-[10px] text-slate-500 italic p-1">Etkin lanet yok</span>
+                        )}
+                        {player.activeModifiers?.map((mod: any, idx: number) => (
+                            <div key={`mod-${idx}`} className="bg-red-950/80 border border-red-900/50 rounded px-2 py-1 flex justify-between items-center text-xs">
+                                <span className="text-red-200 font-medium truncate max-w-[80px]" title={mod.source}>{mod.source}</span>
+                                <div className="flex items-center gap-2">
+                                    <span className="text-red-400 font-bold">{mod.value > 0 ? `+${mod.value}` : mod.value}</span>
+                                    <span className="text-[10px] text-slate-400 bg-slate-900/50 px-1 rounded">{mod.duration} Tur</span>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
             </div>
         );
     };
@@ -200,6 +257,23 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
             </div>
 
             <div className="flex-1 p-4 flex justify-around items-start relative">
+
+                {/* SHOWN CARD OVERLAY (Kick Open Reveal) */}
+                {shownCard && (
+                    <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-[60] flex flex-col items-center animate-in fade-in zoom-in duration-300">
+                        <div className="bg-black/90 p-6 rounded-2xl border-4 border-amber-500 shadow-[0_0_50px_rgba(245,158,11,0.5)] flex flex-col items-center">
+                            <div className="text-amber-500 font-bold text-xl mb-4 text-center">
+                                {shownCard.playerId === socket.id ? 'Kart Çektin!' : `${currentRoom.players.find((p: any) => p.id === shownCard.playerId)?.name} Çekti!`}
+                            </div>
+                            <Card
+                                card={shownCard.card}
+                                isPlayable={false}
+                                onClick={() => { }}
+                            />
+                            <div className="text-white mt-4 font-bold text-lg">{shownCard.card.name}</div>
+                        </div>
+                    </div>
+                )}
 
                 {/* CENTER DECKS (Absolute Positioned) */}
                 <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 flex gap-8 items-center z-10">
@@ -267,14 +341,42 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
                                     </div>
                                 </div>
 
+
                                 {showSpellTarget && (
-                                    <div className="mt-4 flex flex-col items-center gap-2 bg-slate-800 p-4 rounded-xl border border-amber-500">
-                                        <div className="text-amber-500 font-bold text-sm">Hedef Seç: {showSpellTarget.name}</div>
-                                        <div className="flex gap-4">
-                                            <button onClick={() => playFightSpell(showSpellTarget.id, 'player')} className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded font-bold">OYUNCU (+{showSpellTarget.bonus})</button>
-                                            <button onClick={() => playFightSpell(showSpellTarget.id, 'monster')} className="bg-red-600 hover:bg-red-500 px-4 py-2 rounded font-bold">CANAVAR (+{showSpellTarget.bonus})</button>
+                                    <div className="mt-4 flex flex-col items-center gap-2 bg-slate-800 p-4 rounded-xl border border-amber-500 z-50 shadow-2xl">
+                                        <div className="text-amber-500 font-bold text-sm">
+                                            {showSpellTarget.subType === 'curse' ? 'Kime Lanet Okuyacaksın?' : `Hedef Seç: ${showSpellTarget.name}`}
                                         </div>
-                                        <button onClick={() => setShowSpellTarget(null)} className="text-xs text-slate-400 mt-2">İptal</button>
+
+                                        {showSpellTarget.subType === 'curse' ? (
+                                            <div className="flex gap-2 flex-wrap justify-center">
+                                                {currentRoom.players.map((p: any) => (
+                                                    <button
+                                                        key={p.id}
+                                                        onClick={() => playCurseTarget(showSpellTarget.id, p.id)}
+                                                        className="bg-purple-900 hover:bg-purple-700 border border-purple-500 text-purple-200 px-3 py-2 rounded font-bold transition-colors"
+                                                    >
+                                                        {p.name}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        ) : (
+                                            <div className="flex gap-4">
+                                                <button
+                                                    onClick={() => playFightSpell(showSpellTarget.id, currentRoom.currentCombat.playerId, 'player')}
+                                                    className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded font-bold shadow-lg border-b-4 border-blue-800 active:border-b-0 active:translate-y-1"
+                                                >
+                                                    OYUNCU (+{showSpellTarget.bonus})
+                                                </button>
+                                                <button
+                                                    onClick={() => playFightSpell(showSpellTarget.id, '', 'monster')}
+                                                    className="bg-red-600 hover:bg-red-500 px-4 py-2 rounded font-bold shadow-lg border-b-4 border-red-800 active:border-b-0 active:translate-y-1"
+                                                >
+                                                    CANAVAR (+{showSpellTarget.bonus})
+                                                </button>
+                                            </div>
+                                        )}
+                                        <button onClick={() => setShowSpellTarget(null)} className="text-xs text-slate-400 mt-2 hover:text-white underline">İptal</button>
                                     </div>
                                 )}
 
@@ -390,7 +492,7 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
                                 🕵️ YAĞMALA
                             </button>
                             <button
-                                onClick={() => socket.emit('endTurn', currentRoom.id)}
+                                onClick={() => socket.emit('passActionPhase', currentRoom.id)}
                                 className="px-6 py-3 rounded-lg font-black text-lg bg-gradient-to-b from-blue-600 to-blue-800 border-b-4 border-blue-950 text-blue-100 hover:from-blue-500 hover:to-blue-700 transition-all transform hover:scale-105 active:scale-95 shadow-lg"
                             >
                                 ⏩ DEVAM ET
@@ -416,6 +518,22 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
                         <div className="mb-2 w-full">
                             <PlayerInventory player={p} />
                         </div>
+
+                        {/* OTHER PLAYER DEBUFFS */}
+                        {p.activeModifiers && p.activeModifiers.length > 0 && (
+                            <div className="w-full bg-red-900/20 p-1 rounded border border-red-800/50 flex flex-col mb-2">
+                                <span className="text-[8px] text-red-400 font-bold mb-0.5">Lanetler</span>
+                                {p.activeModifiers.map((mod: any, idx: number) => (
+                                    <div key={`op-mod-${idx}`} className="flex justify-between items-center text-[9px] text-red-200 bg-red-950/50 px-1 rounded mb-0.5">
+                                        <span className="truncate max-w-[50px]">{mod.source}</span>
+                                        <div className="flex gap-1">
+                                            <span className="font-bold">{mod.value}</span>
+                                            <span className="text-slate-400">({mod.duration})</span>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
 
                         <div className="text-sm text-slate-400">Elindeki Kart: {p.hand.length}</div>
                         <div className="mt-1 flex justify-center gap-1">
@@ -502,7 +620,7 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
                         >
                             <Card
                                 card={card}
-                                isPlayable={myTurn}
+                                isPlayable={myTurn || (currentRoom.currentCombat?.status === 'active' && (card.subType === 'fightspells' || card.subType === 'curse'))}
                                 onClick={() => {
                                     if (selectingMonsterMode) {
                                         if (card.subType === 'monster') {
@@ -514,11 +632,32 @@ const GamePage: React.FC<GamePageProps> = ({ currentRoom, socket }) => {
                                         return;
                                     }
 
-                                    if (card.subType === 'fightspells') {
+                                    if (card.subType === 'fightspells' || card.subType === 'curse') {
+                                        // Curses can also be played in combat (or usually anytime, but prompt says "same as fight spells... when others in combat")
                                         if (currentRoom.currentCombat?.status === 'active') {
                                             setShowSpellTarget(card);
                                         } else {
-                                            alert("Savaş büyülerini sadece savaş sırasında kullanabilirsin!");
+                                            if (card.subType === 'fightspells') {
+                                                alert("Savaş büyülerini sadece savaş sırasında kullanabilirsin!");
+                                            } else {
+                                                // Curses can typically be played anytime, but user said "same as fight spells... when others in combat"
+                                                // "diğer oyuncular savaştayken kullanılabilsin" implies specifically allowing it then.
+                                                // Munchkin rules: Curses can be played at ANY time.
+                                                // But let's follow the user's specific "like fight spells... when others in combat" phrasing to ensure that flow works.
+                                                // If they meant "ALSO when others in combat", I should allow it always.
+                                                // "ve aynı fight spels gibi diğer oyuncular savaştayken kullanılabilsin" -> "AND be usable when others are in combat just like fight spells".
+                                                // This implies "It wasn't usable before, now make it usable there too".
+                                                // Standard Munchkin: Curses are usable anytime.
+                                                // I will allow it `active` combat OR always?
+                                                // Let's allow it always for flexibility, but definitely in combat.
+                                                // Actually, if I just set `setShowSpellTarget(card)`, it opens the UI.
+                                                // If I want to restrict it to combat per user request nuance or just general rule?
+                                                // Let's allow it always, as that's standard, unless user complains.
+                                                // Wait, `setShowSpellTarget` UI for Curse shows "Players". 
+                                                // "Fight Spell" UI shows "Player/Monster".
+                                                // My UI update handles both subtypes.
+                                                setShowSpellTarget(card);
+                                            }
                                         }
                                     } else {
                                         socket.emit('playCard', { roomId: currentRoom.id, cardId: card.id });

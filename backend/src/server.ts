@@ -90,6 +90,9 @@ function emitRoomUpdate(roomId: string) {
     const { timerInterval, ...serializableRoom } = room;
 
     room.players.forEach(p => {
+        // DEBUG LOGGING
+        // console.log(`[DEBUG] Player ${p.name} activeModifiers:`, p.activeModifiers); 
+
         const maskedPlayers = room.players.map(player => {
             if (player.id === p.id) {
                 return player; // Send full data to owner
@@ -134,7 +137,12 @@ function handleResolveCombat(roomId: string) {
     const monsterLevel = Number(monster.level) || 0;
     const monsterBonus = Number(currentCombat.monsterBonus) || 0;
 
-    const playerTotalStrength = playerLevel + equipmentBonus + playerBonus;
+    let activeModifiersBonus = 0;
+    if (player.activeModifiers) {
+        player.activeModifiers.forEach(mod => activeModifiersBonus += mod.value);
+    }
+
+    const playerTotalStrength = playerLevel + equipmentBonus + playerBonus + activeModifiersBonus;
     const monsterTotalStrength = monsterLevel + monsterBonus;
 
     console.log(`[COMBAT RESOLUTION] Room: ${roomId}`);
@@ -265,6 +273,13 @@ io.on("connection", (socket: Socket) => {
         const currentPlayer = room.players[room.currentTurn];
         if (currentPlayer) {
             currentPlayer.itemsSoldThisTurn = 0;
+        }
+
+        // Decrement Duration of Modifiers
+        // Decrement Duration of Modifiers for the CURRENT player only
+        if (currentPlayer.activeModifiers) {
+            currentPlayer.activeModifiers.forEach(mod => mod.duration--);
+            currentPlayer.activeModifiers = currentPlayer.activeModifiers.filter(mod => mod.duration > 0);
         }
 
         room.currentTurn = (room.currentTurn + 1) % room.players.length;
@@ -401,6 +416,17 @@ io.on("connection", (socket: Socket) => {
         if (!room.doorDeck || room.doorDeck.length === 0) room.doorDeck = initializeDoorDeck(room.deckConfiguration);
         const card = room.doorDeck.pop();
         if (card) {
+            // SHOW CARD LOGIC
+            // User requested: "Don't show notification (overlay) to others if monster, as combat UI appears".
+            if (card.subType === 'monster') {
+                // Only show to the drawer (optional, as combat UI shows it too, but good for feedback)
+                socket.emit('showCard', { card, playerId: player.id });
+            } else {
+                // Show to everyone
+                io.in(roomId).emit('showCard', { card, playerId: player.id });
+            }
+            // io.in(roomId).emit('showCard', { card, playerId: player.id }); // Old global emit
+
             if (card.subType === 'monster') {
                 // MONSTER FOUND! DIRECTLY TO COMBAT
                 room.currentCombat = {
@@ -426,15 +452,58 @@ io.on("connection", (socket: Socket) => {
                     }
                 }, 1000);
 
-                // Combat effectively ends the "Action Selection" possibility for this turn usually, 
-                // or we can set it to 'end' or similar? 
-                // In Munchkin, if you fight a monster on Kick Open, you can't Look for Trouble or Loot.
-                // So we can set phase to 'end' (pending combat resolution) or keep it tracked.
-                // Let's set it to 'end' so they can't do other phase actions.
                 room.turnPhase = 'end';
 
+            } else if (card.subType === 'curse') {
+                // CURSE FOUND! APPLY IMMEDIATELY
+                if (card.id === 'c_cigkofte') {
+                    // Duration: 3 turns
+                    player.activeModifiers.push({ source: card.name, value: -3, duration: 3 });
+                    room.players.forEach(p => {
+                        const socket = io.sockets.sockets.get(p.id);
+                        if (socket) socket.emit("toast", { message: `${player.name} lanetlendi! (${card.name}) Güç -3 (3 Tur).`, type: "warning" });
+                    });
+                } else if (card.id === 'c1') {
+                    // Nazar Çıktı - Immediate on drawer
+                    let candidateItems: { source: 'hand' | 'equipment' | 'backpack', index: number, card: any }[] = [];
+
+                    player.hand.forEach((c, idx) => { if (c.subType === 'item') candidateItems.push({ source: 'hand', index: idx, card: c }); });
+                    player.equipment.forEach((c, idx) => { candidateItems.push({ source: 'equipment', index: idx, card: c }); });
+                    player.backpack.forEach((c, idx) => { if (c.subType === 'item') candidateItems.push({ source: 'backpack', index: idx, card: c }); });
+
+                    if (candidateItems.length > 0) {
+                        const randomIndex = Math.floor(Math.random() * candidateItems.length);
+                        const selected = candidateItems[randomIndex];
+
+                        if (selected.source === 'hand') player.hand.splice(selected.index, 1);
+                        else if (selected.source === 'equipment') player.equipment.splice(selected.index, 1);
+                        else if (selected.source === 'backpack') player.backpack.splice(selected.index, 1);
+
+                        room.discardPile.push(selected.card);
+
+                        room.players.forEach(p => {
+                            const socket = io.sockets.sockets.get(p.id);
+                            if (socket) socket.emit("toast", { message: `${player.name} lanetlendi! ${selected.card.name} yok oldu!`, type: "error" });
+                        });
+                    } else {
+                        room.players.forEach(p => {
+                            const socket = io.sockets.sockets.get(p.id);
+                            if (socket) socket.emit("toast", { message: `${player.name} lanetlendi ama eşyası yok!`, type: "info" });
+                        });
+                    }
+                }
+
+
+                // Discard the curse
+                room.discardPile.push(card);
+
+                // Proceed to Action Selection 
+                // (User: "lanet çekerse de devreye girmiyor... bunun dışındaki kartlar envantere alınsın")
+                // Meaning Curse -> Effect, Discard. Others -> Inventory.
+                room.turnPhase = 'action_selection';
+
             } else {
-                // NO MONSTER. PUT IN HAND.
+                // NO MONSTER OR CURSE (Class, Race, Item, etc.) -> INVENTORY
                 player.hand.push(card);
                 // ENABLE NEXT PHASE
                 room.turnPhase = 'action_selection';
@@ -542,6 +611,91 @@ io.on("connection", (socket: Socket) => {
             room.turnPhase = 'end';
             emitRoomUpdate(roomId);
         }
+    });
+
+    // ⏩ AKSİYON EVRESİNİ GEÇ (PASS ACTION PHASE)
+    socket.on("passActionPhase", (roomId: string) => {
+        const room = rooms[roomId];
+        if (!room) return;
+
+        // Ensure it's the right player
+        if (room.players[room.currentTurn].id !== socket.id) return;
+
+        room.turnPhase = 'end';
+        emitRoomUpdate(roomId);
+    });
+
+    // 🪄 LANET OYNA (PLAY CURSE)
+    socket.on("playCurse", ({ roomId, cardId, targetId }: { roomId: string; cardId: string; targetId: string }) => {
+        const room = rooms[roomId];
+        if (!room) return;
+        const player = room.players.find(p => p.id === socket.id);
+        if (!player) return;
+
+        // Find card
+        const cardIndex = player.hand.findIndex(c => c.id === cardId);
+        if (cardIndex === -1) return;
+        const card = player.hand[cardIndex];
+
+        if (card.subType !== 'curse') {
+            socket.emit("error", "Bu bir lanet kartı değil!");
+            return;
+        }
+
+        const targetPlayer = room.players.find(p => p.id === targetId);
+        if (!targetPlayer) return;
+
+        // Apply Effect
+        if (card.id === 'c_cigkofte') {
+
+            targetPlayer.activeModifiers.push({ source: card.name, value: -3, duration: 3 });
+            // Notify
+            room.players.forEach(p => {
+                const socket = io.sockets.sockets.get(p.id);
+                if (socket) socket.emit("toast", { message: `${player.name}, ${targetPlayer.name} üzerine ${card.name} oynadı! Güç -3.`, type: "warning" });
+            });
+        } else if (card.id === 'c1') {
+            // Nazar Çıktı: Discard random item from Hand, Equipment, or Backpack
+            let candidateItems: { source: 'hand' | 'equipment' | 'backpack', index: number, card: any }[] = [];
+
+            // Check Hand
+            targetPlayer.hand.forEach((c, idx) => {
+                if (c.subType === 'item') candidateItems.push({ source: 'hand', index: idx, card: c });
+            });
+            // Check Equipment
+            targetPlayer.equipment.forEach((c, idx) => {
+                candidateItems.push({ source: 'equipment', index: idx, card: c });
+            });
+            // Check Backpack
+            targetPlayer.backpack.forEach((c, idx) => {
+                if (c.subType === 'item') candidateItems.push({ source: 'backpack', index: idx, card: c });
+            });
+
+            if (candidateItems.length > 0) {
+                const randomIndex = Math.floor(Math.random() * candidateItems.length);
+                const selected = candidateItems[randomIndex];
+
+                // Remove from source
+                if (selected.source === 'hand') targetPlayer.hand.splice(selected.index, 1);
+                else if (selected.source === 'equipment') targetPlayer.equipment.splice(selected.index, 1);
+                else if (selected.source === 'backpack') targetPlayer.backpack.splice(selected.index, 1);
+
+                room.discardPile.push(selected.card);
+
+                // Notify
+                room.players.forEach(p => {
+                    const socket = io.sockets.sockets.get(p.id);
+                    if (socket) socket.emit("toast", { message: `${player.name}, ${targetPlayer.name} üzerine ${card.name} oynadı! ${selected.card.name} yok oldu!`, type: "error" });
+                });
+            } else {
+                socket.emit("toast", { message: `${targetPlayer.name}'in yok edilecek eşyası yok!`, type: "info" });
+            }
+        }
+
+        // Discard
+        player.hand.splice(cardIndex, 1);
+        room.discardPile.push(card);
+        emitRoomUpdate(roomId);
     });
 
     // 🎒 SIRT ÇANTASINA TAŞI

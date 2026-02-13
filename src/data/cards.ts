@@ -51,11 +51,11 @@ export const DOOR_DECK: GameCard[] = [
     } as any,
     {
         id: 'c1',
-        name: 'Nazar Değdi',
+        name: 'Nazar Çıktı',
         type: 'door',
         subType: 'curse',
-        description: 'En iyi eşyan kırıldı. Discard it.',
-        effect: () => console.log('Discard best item'),
+        description: 'Envanterindeki veya çantasındaki rastgele bir eşya yok oldu.',
+        effect: () => console.log('Discard random item'),
     } as any,
     {
         id: 'cl1',
@@ -72,6 +72,14 @@ export const DOOR_DECK: GameCard[] = [
         subType: 'class',
         description: 'Mesai bitti: Savaşta bir kez monsterı görmezden gelip kaçabilirsin (9-5 arası).',
         abilities: ['kacis'],
+    } as any,
+    {
+        id: 'c_cigkofte',
+        name: 'Ekstra Acılı Çiğ Köfte',
+        type: 'door',
+        subType: 'curse',
+        description: 'O kadar acı ki gücünü 3 azalttı! (Bir tur boyunca -3 Güç)',
+        image: '/assets/cards/cigkofte.png',
     } as any,
     {
         id: 'm_bedevi',

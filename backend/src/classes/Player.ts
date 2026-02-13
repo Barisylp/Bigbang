@@ -10,6 +10,7 @@ export class Player {
     public inCombat: boolean;
     public gold: number;
     public itemsSoldThisTurn: number; // For Esnaf class ability
+    public activeModifiers: { source: string, value: number, duration: number }[];
 
     constructor(id: string, name: string) {
         this.id = id;
@@ -17,6 +18,7 @@ export class Player {
         this.level = 1;
         this.gold = 0;
         this.itemsSoldThisTurn = 0;
+        this.activeModifiers = [];
         this.hand = [];
         this.equipment = [];
         this.backpack = [];
@@ -36,6 +38,7 @@ export class Player {
         this.equipment.forEach(item => {
             if (item.bonus) strength += item.bonus;
         });
+        this.activeModifiers.forEach(mod => strength += mod.value);
         return strength;
     }
 }

@@ -11,6 +11,7 @@ export class Player {
     public gold: number;
     public itemsSoldThisTurn: number; // For Esnaf class ability
     public activeModifiers: { source: string, value: number, duration: number }[];
+    public gender: 'male' | 'female' | null;
 
     constructor(id: string, name: string) {
         this.id = id;
@@ -23,6 +24,7 @@ export class Player {
         this.equipment = [];
         this.backpack = [];
         this.inCombat = false;
+        this.gender = null;
     }
 
     levelUp() {

@@ -167,6 +167,20 @@ export const DOOR_DECK: GameCard[] = [
         subType: 'fightspells',
         description: 'Elinizdeki bir canavarı herhangi bir savaşa istediğiniz tarafta dahil edersiniz. Canavarın gücü o tarafa eklenir.',
         bonus: 0, // Bonus depends on selected monster
+        image: '/assets/cards/olmbakgit.png',
+    } as any,
+    {
+        id: 'm_math',
+        name: 'Matematik Hocası',
+        type: 'door',
+        subType: 'monster',
+        description: 'Tahtaya kalkınca dizlerin titrer.',
+        level: 8,
+        treasure: 3,
+        levelReward: 1,
+        badStuff: 'Matematik sorularıyla boğar. 1 seviye kaybedersin.',
+        badStuffEffect: null,
+        image: '/assets/cards/math_teacher.png',
     } as any,
 ];
 

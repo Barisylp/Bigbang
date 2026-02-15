@@ -46,6 +46,15 @@ function initializeTreasureDeck(deckConfig?: DeckConfiguration): GameCard[] {
     return deck;
 }
 
+interface ChatMessage {
+    id: string;
+    senderId: string;
+    senderName: string;
+    text: string;
+    timestamp: number;
+    targetId?: string; // If present, it's a private message
+}
+
 interface Room {
     id: string;
     hostId: string;
@@ -67,9 +76,11 @@ interface Room {
         monsterBonus?: number;
         allyId?: string;
         allyTreasures?: number;
+        isResolving?: boolean;
     };
     timerInterval?: NodeJS.Timeout | null;
     winner?: string | null; // Winner's name
+    messages: ChatMessage[];
 }
 
 const app = express();
@@ -107,7 +118,12 @@ function emitRoomUpdate(roomId: string) {
             };
         });
 
-        const maskedRoom = { ...serializableRoom, players: maskedPlayers };
+        const maskedMessages = room.messages.filter(msg => {
+            if (!msg.targetId) return true; // General message
+            return msg.senderId === p.id || msg.targetId === p.id; // Private message check
+        });
+
+        const maskedRoom = { ...serializableRoom, players: maskedPlayers, messages: maskedMessages };
         io.to(p.id).emit("roomUpdate", maskedRoom);
     });
 }
@@ -254,7 +270,8 @@ io.on("connection", (socket: Socket) => {
             discardPile: [],
             doorDeck: initializeDoorDeck(),
             treasureDeck: initializeTreasureDeck(),
-            turnPhase: 'kick_open'
+            turnPhase: 'kick_open',
+            messages: []
         };
         rooms[roomId] = room;
         socket.join(roomId);
@@ -981,9 +998,86 @@ io.on("connection", (socket: Socket) => {
             socket.emit("error", "Sadece kendi savaşını sonuçlandırabilirsin!");
             return;
         }
-
         console.log(`[MANUAL RESOLVE] Player ${socket.id} resolved combat in room ${roomId}`);
         handleResolveCombat(roomId);
+    });
+
+    // 🚻 CİNSİYET SEÇ
+    socket.on("setGender", ({ roomId, gender }: { roomId: string; gender: 'male' | 'female' }) => {
+        const room = rooms[roomId];
+        if (!room) return;
+        const player = room.players.find(p => p.id === socket.id);
+        if (!player) return;
+
+        if (player.gender === null) {
+            player.gender = gender;
+            io.to(roomId).emit("notification", `${player.name} cinsiyetini ${gender === 'male' ? 'Erkek ♂' : 'Kadın ♀'} olarak seçti.`);
+            emitRoomUpdate(roomId);
+        }
+    });
+
+    // 🎲 KAÇMAK İÇİN ZAR AT
+    socket.on("rollDiceToEscape", ({ roomId }: { roomId: string }) => {
+        const room = rooms[roomId];
+        if (!room || !room.currentCombat || room.currentCombat.status !== 'active' || room.currentCombat.isResolving) return;
+        const player = room.players.find(p => p.id === socket.id);
+        if (!player || room.currentCombat.playerId !== socket.id) return;
+
+        // Set resolving flag to prevent multiple rolls
+        room.currentCombat.isResolving = true;
+
+        // Clear timer
+        if (room.timerInterval) {
+            clearInterval(room.timerInterval);
+            room.timerInterval = null;
+        }
+
+        const diceResult = Math.floor(Math.random() * 6) + 1;
+        io.to(roomId).emit("diceRolled", { playerName: player.name, result: diceResult });
+
+        setTimeout(() => {
+            if (diceResult >= 5) {
+                // ESCAPED
+                io.to(roomId).emit("notification", `${player.name} zar attı: ${diceResult}! Canavardan başarıyla KAÇTI! 🏃💨`);
+                io.to(roomId).emit("combatResolved", { result: 'escaped', player });
+                room.currentCombat = undefined;
+                emitRoomUpdate(roomId);
+            } else {
+                // FAILED TO ESCAPE -> LOSE
+                const oldLevel = player.level;
+                player.level = Math.max(1, player.level - 1);
+                io.to(roomId).emit("notification", `${player.name} zar attı: ${diceResult}! Kaçamadı... Canavarın laneti üzerine çöktü. Seviye: ${oldLevel} -> ${player.level}.`);
+                io.to(roomId).emit("combatResolved", { result: 'loss', player });
+                room.currentCombat = undefined;
+                checkWin(roomId);
+                emitRoomUpdate(roomId);
+            }
+        }, 2000); // 2 second delay for animation feel
+    });
+
+    // 💬 CHAT MESAJI GÖNDER
+    socket.on("sendMessage", ({ roomId, text, targetId }: { roomId: string, text: string, targetId?: string }) => {
+        const room = rooms[roomId];
+        if (!room) return;
+        const player = room.players.find(p => p.id === socket.id);
+        if (!player || !text) return;
+
+        const message: ChatMessage = {
+            id: Math.random().toString(36).substring(7),
+            senderId: socket.id,
+            senderName: player.name,
+            text: text,
+            timestamp: Date.now(),
+            targetId: targetId
+        };
+
+        room.messages.push(message);
+        // Keep only last 50 messages to prevent bloat
+        if (room.messages.length > 50) {
+            room.messages.shift();
+        }
+
+        emitRoomUpdate(roomId);
     });
 
     socket.on("restartGame", (roomId: string) => {
@@ -998,6 +1092,7 @@ io.on("connection", (socket: Socket) => {
         room.discardPile = [];
         room.turnPhase = 'kick_open';
         room.currentCombat = undefined;
+        room.messages = [];
         if (room.timerInterval) {
             clearInterval(room.timerInterval);
             room.timerInterval = null;

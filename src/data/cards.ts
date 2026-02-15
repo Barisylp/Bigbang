@@ -12,6 +12,7 @@ export const DOOR_DECK: GameCard[] = [
         levelReward: 1,
         badStuff: 'Seni çuvala koyup götürür. Bütün eşyalarını kaybedersin.',
         badStuffEffect: () => console.log('Lost all items!'),
+        image: '/assets/cards/gulyabani.png',
     } as any,
     {
         id: 'm2',
@@ -121,6 +122,7 @@ export const TREASURE_DECK: GameCard[] = [
         bonus: 3,
         goldValue: 400,
         slot: 'hand',
+        image: '/assets/cards/islakodun.png',
     } as any,
     {
         id: 'i2',
@@ -132,6 +134,7 @@ export const TREASURE_DECK: GameCard[] = [
         goldValue: 600,
         slot: 'hand',
         usedBy: ['Anne'], // Mecazi, belki class kısıtı eklenir
+        image: '/assets/cards/anneterligi.png',
     } as any,
     {
         id: 'i3',

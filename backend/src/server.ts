@@ -65,8 +65,11 @@ interface Room {
         timer?: number;
         playerBonus?: number;
         monsterBonus?: number;
+        allyId?: string;
+        allyTreasures?: number;
     };
     timerInterval?: NodeJS.Timeout | null;
+    winner?: string | null; // Winner's name
 }
 
 const app = express();
@@ -109,6 +112,19 @@ function emitRoomUpdate(roomId: string) {
     });
 }
 
+function checkWin(roomId: string) {
+    const room = rooms[roomId];
+    if (!room) return;
+
+    const winner = room.players.find(p => p.level >= 10);
+    if (winner) {
+        room.winner = winner.name;
+        io.to(roomId).emit("gameWon", { winner: winner.name });
+        emitRoomUpdate(roomId);
+        console.log(`[WIN] ${winner.name} won in room ${roomId}`);
+    }
+}
+
 function handleResolveCombat(roomId: string) {
     const room = rooms[roomId];
     if (!room || !room.currentCombat || room.currentCombat.status !== 'active') return;
@@ -138,16 +154,37 @@ function handleResolveCombat(roomId: string) {
     const monsterLevel = Number(monster.level) || 0;
     const monsterBonus = Number(currentCombat.monsterBonus) || 0;
 
+    let allyStrength = 0;
+    let ally: Player | undefined;
+    if (currentCombat.allyId) {
+        ally = room.players.find(p => p.id === currentCombat.allyId);
+        if (ally) {
+            const allyLevel = Number(ally.level) || 0;
+            let allyEquipBonus = 0;
+            if (ally.equipment) {
+                ally.equipment.forEach(item => {
+                    if (item.bonus) allyEquipBonus += Number(item.bonus);
+                });
+            }
+            let allyModsBonus = 0;
+            if (ally.activeModifiers) {
+                ally.activeModifiers.forEach(mod => allyModsBonus += mod.value);
+            }
+            allyStrength = allyLevel + allyEquipBonus + allyModsBonus;
+            console.log(`[ALLY] ${ally.name} added ${allyStrength} strength to combat.`);
+        }
+    }
+
     let activeModifiersBonus = 0;
     if (player.activeModifiers) {
         player.activeModifiers.forEach(mod => activeModifiersBonus += mod.value);
     }
 
-    const playerTotalStrength = playerLevel + equipmentBonus + playerBonus + activeModifiersBonus;
+    const playerTotalStrength = playerLevel + equipmentBonus + playerBonus + activeModifiersBonus + allyStrength;
     const monsterTotalStrength = monsterLevel + monsterBonus;
 
     console.log(`[COMBAT RESOLUTION] Room: ${roomId}`);
-    console.log(`Player: ${player.name} | Lvl: ${playerLevel} + Equip: ${equipmentBonus} + Bonus: ${playerBonus} = TOTAL: ${playerTotalStrength}`);
+    console.log(`Player: ${player.name} | Lvl: ${playerLevel} + Equip: ${equipmentBonus} + Bonus: ${playerBonus} + Ally: ${allyStrength} = TOTAL: ${playerTotalStrength}`);
     console.log(`Monster: ${monster.name} | Lvl: ${monsterLevel} + Bonus: ${monsterBonus} = TOTAL: ${monsterTotalStrength}`);
 
     // In Munchkin, player must be STRICTLY GREATER to win (unless they have Warrior/Savasci class)
@@ -158,20 +195,33 @@ function handleResolveCombat(roomId: string) {
         player.level = Math.min(10, player.level + (monster.levelReward || 1));
 
         const treasureCount = monster.treasure || 1;
-        const earnedTreasures = [];
+        const allyTreasures = currentCombat.allyTreasures || 0;
+        const playerTreasures = Math.max(0, treasureCount - allyTreasures);
+
+        const earnedTreasures: string[] = [];
+        const allyEarnedTreasures: string[] = [];
+
         for (let i = 0; i < treasureCount; i++) {
             if (!room.treasureDeck || room.treasureDeck.length === 0) {
                 room.treasureDeck = initializeTreasureDeck(room.deckConfiguration);
             }
             const tCard = room.treasureDeck.pop();
             if (tCard) {
-                player.hand.push(tCard);
-                earnedTreasures.push(tCard.name);
+                if (ally && i < allyTreasures) {
+                    ally.hand.push(tCard);
+                    allyEarnedTreasures.push(tCard.name);
+                } else {
+                    player.hand.push(tCard);
+                    earnedTreasures.push(tCard.name);
+                }
             }
         }
 
-        console.log(`Result: WIN for ${player.name}`);
-        io.to(roomId).emit("notification", `${player.name} canavarı yendi! Seviye: ${oldLevel} -> ${player.level}. Hazineler: ${earnedTreasures.join(", ")}`);
+        console.log(`Result: WIN for ${player.name}${ally ? ` and ally ${ally.name}` : ''}`);
+        let notifyMsg = `${player.name} canavarı yendi! Seviye: ${oldLevel} -> ${player.level}.`;
+        if (earnedTreasures.length > 0) notifyMsg += ` Kazanılan: ${earnedTreasures.join(", ")}.`;
+        if (ally && allyEarnedTreasures.length > 0) notifyMsg += ` Müttefik ${ally.name} kazandı: ${allyEarnedTreasures.join(", ")}.`;
+        io.to(roomId).emit("notification", notifyMsg);
         io.to(roomId).emit("combatResolved", { result: 'win', player });
     } else {
         // LOSE
@@ -184,6 +234,7 @@ function handleResolveCombat(roomId: string) {
     }
 
     room.currentCombat = undefined;
+    checkWin(roomId);
     emitRoomUpdate(roomId);
 }
 
@@ -218,8 +269,11 @@ io.on("connection", (socket: Socket) => {
             socket.emit("error", "Oda bulunamadı");
             return;
         }
-        const existingPlayer = room.players.find(p => p.id === socket.id);
-        if (!existingPlayer) {
+        const existingPlayer = room.players.find(p => p.name === playerName);
+        if (existingPlayer) {
+            console.log(`[RECONNECT] Player ${playerName} reconnected with new ID ${socket.id}`);
+            existingPlayer.id = socket.id;
+        } else {
             const player = new Player(socket.id, playerName);
             room.players.push(player);
         }
@@ -325,13 +379,18 @@ io.on("connection", (socket: Socket) => {
             } else if (playedCard.subType === 'class') {
                 player.class = playedCard;
             } else if (playedCard.subType === 'blessing') {
-                if (playedCard.id === 'b_ballipust' || (playedCard.effect && playedCard.effect.includes && playedCard.effect.includes("Level Up"))) {
-                    if (player.level < 9) player.level += 1;
+                if (playedCard.id === 'b_ballipust' || (playedCard.effect && playedCard.effect.toString().includes("Level Up"))) {
+                    if (player.level < 9) {
+                        player.level += 1;
+                        checkWin(roomId);
+                    } else {
+                        socket.emit("toast", { message: "En fazla 9. seviyeye kartla çıkabilirsin! 10 olmak için savaşmalısın.", type: "warning" });
+                    }
                 }
             }
 
             if (room.currentCombat && room.currentCombat.status === 'active') {
-                if (room.currentCombat.timer !== undefined) room.currentCombat.timer += 2;
+                if (room.currentCombat.timer !== undefined) room.currentCombat.timer += 8;
             }
             emitRoomUpdate(roomId);
         }
@@ -410,7 +469,7 @@ io.on("connection", (socket: Socket) => {
                 else room.currentCombat.monsterBonus = (room.currentCombat.monsterBonus || 0) + monsterPower;
 
                 if (room.currentCombat.timer !== undefined) {
-                    room.currentCombat.timer += 5;
+                    room.currentCombat.timer += 8;
                 }
 
                 io.to(roomId).emit("notification", `${player.name} Olm Bak Git oynadı! ${selectedMonster.name} canavarını (${monsterPower} Güç) ${target === 'player' ? 'Savaşçı' : 'Canavar'} tarafına dahil etti!`);
@@ -423,8 +482,8 @@ io.on("connection", (socket: Socket) => {
             else room.currentCombat.monsterBonus = (room.currentCombat.monsterBonus || 0) + bonus;
 
             if (room.currentCombat.timer !== undefined) {
-                room.currentCombat.timer += 5;
-                io.to(roomId).emit("notification", `${player.name} bir savaş büyüsü oynadı! Savaş süresi 5 saniye uzadı.`);
+                room.currentCombat.timer += 8;
+                io.to(roomId).emit("notification", `${player.name} bir savaş büyüsü oynadı! Savaş süresi 8 saniye uzadı.`);
             }
             emitRoomUpdate(roomId);
         }
@@ -480,8 +539,8 @@ io.on("connection", (socket: Socket) => {
             // SHOW CARD LOGIC
             // User requested: "Don't show notification (overlay) to others if monster, as combat UI appears".
             if (card.subType === 'monster') {
-                // Only show to the drawer (optional, as combat UI shows it too, but good for feedback)
-                socket.emit('showCard', { card, playerId: player.id });
+                // IMPORTANT: User requested no redundant overlay notification for monsters
+                // socket.emit('showCard', { card, playerId: player.id }); 
             } else {
                 // Show to everyone
                 io.in(roomId).emit('showCard', { card, playerId: player.id });
@@ -494,7 +553,7 @@ io.on("connection", (socket: Socket) => {
                     monster: card,
                     playerId: player.id,
                     status: 'active',
-                    timer: 7,
+                    timer: 15,
                     playerBonus: 0,
                     monsterBonus: 0
                 };
@@ -604,7 +663,7 @@ io.on("connection", (socket: Socket) => {
             monster: card,
             playerId: player.id,
             status: 'active',
-            timer: 7,
+            timer: 15,
             playerBonus: 0,
             monsterBonus: 0
         };
@@ -750,8 +809,8 @@ io.on("connection", (socket: Socket) => {
         // COMBAT INTERVENTION: Extend timer if someone plays a curse during combat
         if (room.currentCombat && room.currentCombat.status === 'active') {
             if (room.currentCombat.timer !== undefined) {
-                room.currentCombat.timer += 5;
-                io.to(roomId).emit("notification", `${player.name} bir lanet oynayarak savaşa müdahale etti! Savaş süresi 5 saniye uzadı.`);
+                room.currentCombat.timer += 8;
+                io.to(roomId).emit("notification", `${player.name} bir lanet oynayarak savaşa müdahale etti! Savaş süresi 8 saniye uzadı.`);
             }
         }
 
@@ -828,13 +887,18 @@ io.on("connection", (socket: Socket) => {
             } else if (playedCard.subType === 'class') {
                 player.class = playedCard;
             } else if (playedCard.subType === 'blessing') {
-                if (playedCard.id === 'b_ballipust' || (playedCard.effect && playedCard.effect.includes && playedCard.effect.includes("Level Up"))) {
-                    if (player.level < 9) player.level += 1;
+                if (playedCard.id === 'b_ballipust' || (playedCard.effect && playedCard.effect.toString().includes("Level Up"))) {
+                    if (player.level < 9) {
+                        player.level += 1;
+                        checkWin(roomId);
+                    } else {
+                        socket.emit("toast", { message: "En fazla 9. seviyeye kartla çıkabilirsin! 10 olmak için savaşmalısın.", type: "warning" });
+                    }
                 }
             }
 
             if (room.currentCombat && room.currentCombat.status === 'active') {
-                if (room.currentCombat.timer !== undefined) room.currentCombat.timer += 2;
+                if (room.currentCombat.timer !== undefined) room.currentCombat.timer += 8;
             }
             emitRoomUpdate(roomId);
         }
@@ -847,14 +911,116 @@ io.on("connection", (socket: Socket) => {
         const player = room.players.find(p => p.id === socket.id);
         if (!player) return;
 
-        if (player.level < 9 && player.gold >= 1000) {
-            const levelsToBuy = Math.min(Math.floor(player.gold / 1000), 9 - player.level);
-            if (levelsToBuy > 0) {
-                player.level += levelsToBuy;
-                player.gold = 0;
+        if (player.gold >= 1000) {
+            const levelsToBuy = Math.floor(player.gold / 1000);
+            const maxLevelsCanBuy = Math.max(0, 9 - player.level);
+            const actualBuy = Math.min(levelsToBuy, maxLevelsCanBuy);
+
+            if (actualBuy > 0) {
+                player.level += actualBuy;
+                player.gold -= actualBuy * 1000;
                 emitRoomUpdate(roomId);
+            } else if (player.level >= 9) {
+                socket.emit("toast", { message: "Marketten en fazla 9. seviyeye kadar çıkabilirsin! 10 olmak için savaşmalısın.", type: "warning" });
             }
         }
+    });
+
+    // 🤝 MÜTTEFİK İSTEĞİ GÖNDER
+    socket.on("requestAlly", ({ roomId, targetId, treasures }: { roomId: string, targetId: string, treasures: number }) => {
+        const room = rooms[roomId];
+        if (!room || !room.currentCombat || room.currentCombat.status !== 'active') return;
+        const combatant = room.players.find(p => p.id === socket.id);
+        if (!combatant || room.currentCombat.playerId !== socket.id) return;
+
+        const target = room.players.find(p => p.id === targetId);
+        if (!target || targetId === socket.id) return;
+
+        const monster = room.currentCombat.monster;
+        if (treasures > (monster.treasure || 1)) {
+            socket.emit("error", "Canavarın hazinesinden fazlasını teklif edemezsin!");
+            return;
+        }
+
+        console.log(`[ALLY REQUEST] From ${combatant.name} to targetId ${targetId} for ${treasures} treasures.`);
+
+        io.to(targetId).emit("allyRequestReceived", {
+            requesterId: socket.id,
+            requesterName: combatant.name,
+            treasures: treasures
+        });
+    });
+
+    // 🤝 MÜTTEFİK İSTEĞİNE CEVAP VER
+    socket.on("respondToAllyRequest", ({ roomId, requesterId, accepted, treasures }: { roomId: string, requesterId: string, accepted: boolean, treasures: number }) => {
+        const room = rooms[roomId];
+        if (!room || !room.currentCombat || room.currentCombat.status !== 'active') return;
+        if (room.currentCombat.playerId !== requesterId) return;
+
+        const requester = room.players.find(p => p.id === requesterId);
+        const responder = room.players.find(p => p.id === socket.id);
+        if (!requester || !responder) return;
+
+        if (accepted) {
+            room.currentCombat.allyId = socket.id;
+            room.currentCombat.allyTreasures = treasures;
+            io.to(roomId).emit("notification", `${requester.name} ve ${responder.name} müttefik oldu! Güçlerini bu savaş için birleştirdiler.`);
+        } else {
+            io.to(requesterId).emit("toast", { message: `${responder.name} yardım isteğini reddetti.`, type: "info" });
+        }
+        emitRoomUpdate(roomId);
+    });
+
+    // ⚔️ SAVAŞI SONUÇLANDIR (MANUEL)
+    socket.on("resolveCombat", ({ roomId }: { roomId: string }) => {
+        const room = rooms[roomId];
+        if (!room || !room.currentCombat || room.currentCombat.status !== 'active') return;
+
+        // Sadece savaştaki oyuncu sonuçlandırabilir.
+        if (room.currentCombat.playerId !== socket.id) {
+            socket.emit("error", "Sadece kendi savaşını sonuçlandırabilirsin!");
+            return;
+        }
+
+        console.log(`[MANUAL RESOLVE] Player ${socket.id} resolved combat in room ${roomId}`);
+        handleResolveCombat(roomId);
+    });
+
+    socket.on("restartGame", (roomId: string) => {
+        const room = rooms[roomId];
+        if (!room || room.hostId !== socket.id) return;
+
+        console.log(`[RESTART] Room ${roomId} is being restarted by host`);
+
+        room.started = false;
+        room.winner = null;
+        room.currentTurn = 0;
+        room.discardPile = [];
+        room.turnPhase = 'kick_open';
+        room.currentCombat = undefined;
+        if (room.timerInterval) {
+            clearInterval(room.timerInterval);
+            room.timerInterval = null;
+        }
+
+        room.players.forEach(player => {
+            player.level = 1;
+            player.gold = 0;
+            player.hand = [];
+            player.equipment = [];
+            player.backpack = [];
+            player.race = null;
+            player.class = null;
+            player.activeModifiers = [];
+            player.itemsSoldThisTurn = 0;
+        });
+
+        // Re-initialize decks
+        room.doorDeck = initializeDoorDeck(room.deckConfiguration);
+        room.treasureDeck = initializeTreasureDeck(room.deckConfiguration);
+
+        emitRoomUpdate(roomId);
+        io.to(roomId).emit("gameRestarted");
     });
 
     // ❌ ÇIKIŞ

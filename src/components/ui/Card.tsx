@@ -51,9 +51,23 @@ export function Card({ card, onClick, onDiscard, isPlayable = false }: CardProps
                     )}
                 </div>
 
-                {/* Image Placeholder */}
-                <div className="w-full h-24 bg-slate-200 border border-slate-300 mb-2 flex items-center justify-center text-xs text-slate-500">
-                    {card.image ? <img src={card.image} /> : 'Resim Yok'}
+                {/* Image Area */}
+                <div className="w-full h-24 bg-slate-200/50 border border-slate-300/50 mb-2 flex items-center justify-center text-[10px] text-slate-400 overflow-hidden rounded-sm ring-1 ring-slate-300/20">
+                    {card.image ? (
+                        <img
+                            src={card.image}
+                            alt={card.name}
+                            className="w-full h-full object-contain mix-blend-multiply"
+                            onError={(e) => {
+                                (e.target as HTMLImageElement).src = 'https://via.placeholder.com/150?text=Kayıp+Resim';
+                            }}
+                        />
+                    ) : (
+                        <div className="flex flex-col items-center opacity-40">
+                            <span className="text-xl mb-1">🖼️</span>
+                            <span>Resim Yok</span>
+                        </div>
+                    )}
                 </div>
 
                 {/* Description */}
